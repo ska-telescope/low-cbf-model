@@ -1,0 +1,37 @@
+{"sky":
+   [
+
+      [
+         {"index":[1],
+          "ascension":[10],
+          "declination":[14.234],
+          "rate":[20],
+          "coarse":[100],
+          "fine":[1205],
+          "RMS":[20],
+          "sinusoids":[1],
+          "polarisation":[1,0,1,0],
+          "BW":[1],
+          "skyImage":[""],
+          "skyImageDimension":[3]
+          }
+      ],
+
+      [
+         {"index":[2],
+          "ascension":[20],
+          "declination":[10],
+          "rate":[1],
+          "coarse":[65],
+          "fine":[1000],
+          "RMS":[20],
+          "sinusoids":[0],
+          "polarisation":[1,0,0,0],
+          "BW":[1],
+          "skyImage":["fortytwo.png"],
+          "skyImageDimension":[3]
+          }
+      ]
+
+   ]
+}
