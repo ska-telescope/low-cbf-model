@@ -42,7 +42,7 @@ altitude = stations.altitude; % of the telescope (about 400m for SKA)
 % distance in meters east and north
 %stationLoc = [0, 0; 1000, 0; -1000, 0; 1000, 1000];
 stationLoc = stations.offsets;
-stations = size(stationLoc,1);
+totalStations = size(stationLoc,1);
 
 % Distance of the telescope center from the center of the earth.
 a = 6378.1370e3;
@@ -55,13 +55,13 @@ rAxis = rCenter * cos(latitude);
 % delay of the object at the station is given by 
 %  D = d0 + A * sin(R*w*t + P)
 % where w is sidereal rate and t is time.
-delayFunctions.offset = zeros(stations,1);
-delayFunctions.amplitude = zeros(stations,1);
-delayFunctions.phase = zeros(stations,1);
-delayFunctions.rate = zeros(stations,1);
-delayFunctions.poly = zeros(stations,4);
+delayFunctions.offset = zeros(totalStations,1);
+delayFunctions.amplitude = zeros(totalStations,1);
+delayFunctions.phase = zeros(totalStations,1);
+delayFunctions.rate = zeros(totalStations,1);
+delayFunctions.poly = zeros(totalStations,4);
 
-for s = 1:stations
+for s = 1:totalStations
     % Convert east,north locations to actual latitude, longitude
     long = stationLoc(s,1)/rAxis;  % Only use the offset for the longitude; This sets the zero for time such that a right ascension of 0 is on the horizon at t = 0
     lat = latitude - stationLoc(s,2)/rCenter;
@@ -97,7 +97,7 @@ t = (observationTime - (polyWindow/2)):1:(observationTime + (polyWindow/2));
 % t_fit is the time interval recentered so observationTime = 0.
 t_fit = t + observationTime;
 
-for s = 1:stations
+for s = 1:totalStations
     d = delayFunctions.offset(s) + delayFunctions.amplitude(s) * sin(delayFunctions.rate(s) * t + delayFunctions.phase(s));
     p = polyfit(t_fit,d,3);
     delayFunctions.poly(s,1:4) = p;
@@ -110,7 +110,7 @@ if (doplot)
     clf;
     hold on;
     grid on;
-    for s = 1:stations
+    for s = 1:totalStations
         plot(delayFunctions.offset(s) + delayFunctions.amplitude(s) * sin(delayFunctions.rate(s) * (0:100:siderealSeconds) + delayFunctions.phase(s)),[clist(mod(s,7) + 1) '.-']);
     end
     title('Delay functions (full 24 hours)');
@@ -121,7 +121,7 @@ if (doplot)
     hold on;
     grid on;
     tplot = 10 * (((-polyWindow/2):0.1:(polyWindow/2)));
-    for s = 1:stations
+    for s = 1:totalStations
         plot(tplot,delayFunctions.offset(s) + delayFunctions.amplitude(s) * sin(delayFunctions.rate(s) * tplot + delayFunctions.phase(s)),[clist(mod(s,7) + 1) '.-']);
         plot(tplot,delayFunctions.poly(s,1)*(tplot.^3) + delayFunctions.poly(s,2)*(tplot.^2) + delayFunctions.poly(s,3)*(tplot) + delayFunctions.poly(s,4),[clist(mod(s,7) + 1) 'o-']);
     end
@@ -132,7 +132,7 @@ if (doplot)
     clf;
     hold on;
     grid on;
-    for s = 1:stations
+    for s = 1:totalStations
         % True Delay
         d1 = delayFunctions.offset(s) + delayFunctions.amplitude(s) * sin(delayFunctions.rate(s) * tplot + delayFunctions.phase(s));
         % Polynomial Approximation

@@ -3,7 +3,7 @@ function [resampled] = resampleNU(din,Ts,CF,delay,resampledPoints)
 % Resamples the input signal using a non-uniform rate specified by delay.
 % Inputs:
 %  din : complex baseband input data.
-%  Ts : period for the input data in ns.
+%  Ts : Sampling period in nanoseconds. The same value is used for the input data (din) and the output (resampled), except for the change created by the resampling.
 %  CF : center frequency in Hz for the input data (impacts the doppler shift)
 %  delay : Time offset for sampling the signal, specified as a sinusoid with an array of 4 numbers
 %          [offset, amplitude, frequency, phase]
@@ -27,7 +27,7 @@ BWFrac = 1;
 resampled = zeros(resampledPoints,1);
 for p = 1:resampledPoints
     % Delay in fractions of a sample 
-    DelayOffset = (delay(1) + delay(2) * sin(delay(3) * (p-1) + delay(4)))/Ts;
+    DelayOffset = (delay(1) + delay(2) * sin(delay(3) * (p-1)*Ts*1e-9 + delay(4)))/Ts;
     DelayOffsetInt = floor(DelayOffset);
     DelayOffsetFrac = DelayOffset - DelayOffsetInt;
     % Base delay offset in samples

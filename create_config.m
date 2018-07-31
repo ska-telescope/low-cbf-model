@@ -145,6 +145,44 @@ fclose(fid);
 model_json = char(model_json');
 modelConfig = jsondecode(model_json);
 
+% Put in LFAAMAC field if it is not already there.
+if ~isfield(modelConfig,'LFAAMAC')
+    modelConfig.LFAAMAC = zeros(300,6,'uint8');
+    modelConfig.LFAAMAC(:,1) = 1;
+    modelConfig.LFAAMAC(:,2) = 2;
+    modelConfig.LFAAMAC(:,3) = 3;
+    modelConfig.LFAAMAC(:,6) = 0;
+    for n = 1:300
+        modelConfig.LFAAMAC(n,4) = floor((n-1)/256);
+        modelConfig.LFAAMAC(n,5) = mod((n-1),256);
+    end
+end
+
+% Put in the IP field if it is not already there
+if ~isfield(modelConfig,'IP')
+    modelConfig.IP = zeros(300,4,'uint8');
+    modelConfig.IP(:,1) = 192;
+    modelConfig.IP(:,2) = 168;
+    for n = 1:300
+        modelConfig.IP(n,3) = floor((n-1)/256);
+        modelConfig.IP(n,4) = mod((n-1),256);
+    end
+end
+
+% Put in the LFAAUDPSrc and LFAAUDPDest fields (source and destination UDP ports for SPEAD packets from LFAA
+if ~isfield(modelConfig,'LFAAUDPSrc')
+    modelConfig.LFAAUDPSrc = 2000;
+end
+if ~isfield(modelConfig,'LFAAUDPDest')
+    modelConfig.LFAAUDPDest = 2001;
+end
+
+% Put in timestamp. This is the offset of the first sample in the first packet from sync_time in the LFAA SPEAD header.
+if ~isfield(modelConfig,'timestamp')
+    modelConfig.timestamp = 0;
+end
+
+
 %% Check if lmcConfig.txt is out of date, if so then generate it and save it.
 lmcOutOfDate = 0;
 if exist(fullfile(cd,rundir,'lmcConfig.txt'),'file')
@@ -208,7 +246,7 @@ if (lmcOutOfDate)
     %% -- "stations" -------------------------------------------------------------
     % sets logical IDs, locations and station types for all the stations.
     % Two structures are generated :
-    %  stationsFull : Used for generating delay polynomials later in this function, then discarded.
+    %  stationsFull : Used for generating delay polynomials later in this function. Also stored in arrayConfigFull for future reference.
     %  arrayConfigFull.stations : Part of the LMC configuration (written back to the file "lmcConfig.txt").
     %
     % "StationsFull" is a revised version of the stations structure, with fields:
@@ -327,7 +365,7 @@ if (lmcOutOfDate)
             end
         end
     end
-
+    arrayConfigFull.stationsFull = stationsFull;
 
     %% -- "subArray" ------------------------------------------------------------ 
     % Get each subarray listed, error check, put in all fields in a consistent format, and insert into arrayConfigFull
@@ -1444,7 +1482,6 @@ end
 % 
 if (skyOutOfDate)
     disp('Generating LFAA data as it is out of date.')
-    keyboard
     % Step through each stationBeam and create data.
     % for each stationbeam
     %   for each station
@@ -1471,9 +1508,287 @@ if (skyOutOfDate)
     end
     stationList = unique(stationList);
     
-    % step through the stations
-    for s1 = 1:ceil(length(stationsList)/2)
-        % Work out how many active channels there are for this station.
+    % Create the data as it comes from the sky
+    % i.e. without taking into account the delays at each station
+    keyboard
+    for s1 = 1:length(sky)
+        % add to the sky structure a list of coarse channels that are non-zero, and a raw data structure
+        % which is MxN, where M is the number of samples generated and N is the number of non-zero coarse channels.
+        
+    end
+    
+    %keyboard
+    % Each FPGA gets data for 2 stations, first step through FPGA
+    for fpgaIndex = 1:floor(length(stationList)/2)
+        % Each FPGA gets data from up to 8 logical stations (2 stations x 4 substations)
+        % Get a list of logical stations for this FPGA.
+        
+        logicalIDs = [];
+        stationIDs = [];   % Each logicalID has a unique combination of stationID and a substationID
+        substationIDs = [];
+        channelCount = 0;   % count of the number of channels being sent to this FPGA. Can get up to 2*384.
+        usedChannelCount = 0;  % count of the number of channels being sent to this FPGA that are non-zero.
+        if (((fpgaIndex-1)*2 + 2) <= length(stationList)) % two stations sending data to this FPGA
+            stationsToThisFPGA = [stationList((fpgaIndex-1)*2 + 1) stationList((fpgaIndex-1)*2 + 2)];
+        else
+            stationsToThisFPGA = stationList((fpgaIndex-1)*2 + 1);  % one station sending data to this FPGA
+        end
+        for station = stationsToThisFPGA
+            for s1 = 1:length(arrayConfigFull.stations)
+                for s2 = 1:length(arrayConfigFull.stations(s1).stationIDs)
+                    if (station == arrayConfigFull.stations(s1).stationIDs(s2))
+                        logicalIDs = [logicalIDs arrayConfigFull.stations(s1).logicalIDs(s2)];
+                        stationIDs = [stationIDs station];
+                        substationIDs = [substationIDs arrayConfigFull.stations(s1).substationIDs(s2)];
+                    end
+                end
+            end
+        end
+        
+        % Find the number of channels coming to this FPGA
+        totalChannels = 0;
+        for logicalIndex = 1:length(logicalIDs)
+            logicalID = logicalIDs(logicalIndex);
+            subArrayIndex = -1;
+            for sIndex = 1:length(arrayConfigFull.subArray)
+                if any(logicalID == arrayConfigFull.subArray(sIndex).logicalIDs)
+                    subArrayIndex = arrayConfigFull.subArray(sIndex).index;
+                end
+            end
+            if (subArrayIndex ~= -1)
+                % Find the stationBeams for this subArray, and add up the number of channels in each stationBeam
+                for beamIndex = 1:length(arrayConfigFull.stationBeam)
+                    if (arrayConfigFull.stationBeam(beamIndex).subArray == subArrayIndex)
+                        totalChannels = totalChannels + length(arrayConfigFull.stationBeam(beamIndex).channels);
+                    end
+                end
+            end
+        end
+        
+        fpga(fpgaIndex).headers = zeros(114,totalChannels * modelConfig.runtime * 408,'uint8'); % Note runtime is in units of 0.9s integration periods; Each period is 408 packets worth. (408 * 2048 * 1080ns = 0.9024s)
+        
+        %keyboard
+        logicalChannel = 0;  % logical channel is used in the SPEAD header. It counts channels for a particular station.
+        for logicalIndex = 1:length(logicalIDs)
+            logicalID = logicalIDs(logicalIndex);
+            stationID = stationIDs(logicalIndex);
+            substationID = substationIDs(logicalIndex);
+            if ((logicalIndex > 1) && (stationIDs(logicalIndex-1) ~= stationIDs(logicalIndex)))
+                % New station, reset the logicalChannel count.
+                logicalChannel = 0;
+            end
+            % Work out how many active channels there are for this logical station.
+            % First find the subarray this logical station is in
+            subArrayIndex = -1;
+            for sIndex = 1:length(arrayConfigFull.subArray)
+                if any(logicalID == arrayConfigFull.subArray(sIndex).logicalIDs)
+                    subArrayIndex = arrayConfigFull.subArray(sIndex).index;
+                end
+            end
+            if (subArrayIndex == -1)
+                warning(['Logical station ' num2str(logicalID) ' is not assigned to a sub array']);
+                channelList = [];
+            else
+                % Find the stationBeams for this subArray, and step through each of the channels for each stationBeam
+                for beamIndex = 1:length(arrayConfigFull.stationBeam)
+                    if (arrayConfigFull.stationBeam(beamIndex).subArray == subArrayIndex)
+                        skyIndex = arrayConfigFull.stationBeam(beamIndex).skyIndex;
+                        for channelI = 1:length(arrayConfigFull.stationBeam(beamIndex).channels)
+                            channel = arrayConfigFull.stationBeam(beamIndex).channels(channelI);
+                            % Count of the total number of channels coming to this FPGA
+                            channelCount = channelCount + 1;
+                            % Count of the channels coming from this station
+                            logicalChannel = logicalChannel + 1;
+                            % Generate the first header for this logical station and channel in fpga(fpgaIndex).headers(1:114,channelCount)
+                            %  channel is arrayConfigFull.stationBeam(beamIndex).channels(channelI) 
+                            %  subArrayIndex is arrayConfigFull.subArray(XX).index
+                            %  stationBeam is arrayConfigFull.stationBeam(beamIndex).index
+                            % 
+                            % Fields in each packet :
+                            %  1:6    : Destination MAC 
+                            %  7:12   : Source MAC
+                            %  13:14  : EtherType = 0x0800 (indicates IPv4)
+                            %  15:34  : IPv4 header
+                            %  
+                            %  35:42  : UDP header
+                            %  43:114 : SPEAD header
+                            hdr = zeros(114,1,'uint8');
+                            hdr(1:6) = modelConfig.LFAAMAC(fpgaIndex,:);  % destination MAC address
+                            hdr(7:12) = [0 0 0 0 0 0];    % source MAC address (low.CBF ignores this).
+                            hdr(13:14) = [8 0];           % Ethertype
+                            hdr(15) = hex2dec('45');      % IPv4, version + IHL
+                            hdr(16) = 0;                  % IPv4, DSCP + ECN
+                            hdr(17) = hex2dec('20');      % IPv4 length; Total length is (IPv4 Header) + (UDP header) + (SPEAD) + (data) = 20 + 8 + 72 + 8192 = 8292 bytes = 0x2064
+                            hdr(18) = hex2dec('64');
+                            hdr(19:20) = 0;               % IPv4, Identification
+                            hdr(21:22) = 0;               % IPv4, Flags and fragment offset
+                            hdr(23) = 8;                  % IPv4, time to live
+                            hdr(24) = 17;                 % IPv4, protocol, 17 = UDP.
+                            hdr(25:26) = 0;               % hdr(25:26) is the IPv4 checksum; fix this after the IP addresses are done.
+                            hdr(27:30) = [192 168 255 1]; % Source IP address
+                            hdr(31:34) = modelConfig.IP(fpgaIndex,:); % Destination IP address
+                            % Calculate the IPv4 checksum, from hdr(15:34)
+                            hdrd = double(hdr(15:34));
+                            hdr16bit = 256 * hdrd(1:2:end) + hdrd(2:2:end);
+                            hsum = sum(hdr16bit);
+                            while (hsum > 65535)
+                                hsum = mod(hsum,65536) + floor(hsum/65536);
+                            end
+                            hsum = 65535 - hsum;
+                            hdr(25) = floor(hsum/256);
+                            hdr(26) = mod(hsum,256);
+                            % UDP header
+                            hdr(35) = floor(modelConfig.LFAAUDPSrc/256);  % source UDP port
+                            hdr(36) = mod(modelConfig.LFAAUDPSrc,256);
+                            hdr(37) = floor(modelConfig.LFAAUDPDest/256); % destination UDP port
+                            hdr(38) = mod(modelConfig.LFAAUDPDest,256);
+                            hdr(39) = floor(8272/256);  % UDP Length = 8 (UDP header) + 72 (SPEAD header) + 8192 (data) = 8272
+                            hdr(40) = mod(8272,256);
+                            % calculate the UDP checksum
+                            % temporarily put in 0 for the UDP checksum.
+                            hdr(41) = 0;
+                            hdr(42) = 0;
+                            
+                            % UDP checksum calculation; do this later when data is available.
+%                             pseudoHdr(1:8) = hdr(27:34); % src and destination IP address
+%                             pseudoHdr(9) = 0;            % 0
+%                             pseudoHdr(10) = 17;          % protocol
+%                             pseudoHdr(11) = hdr(39);     % UDP length field, same as length field in the UDP header.
+%                             pseudoHdr(12) = hdr(40);  
+%                             pseudoHdr(13:18) = hdr(35:40); % source UDP port, destination UDP port, UDP length.
+%                             pseudoHdr16bit = 256 * pseudoHdr(1:2:18) + pseudoHdr(2:2:18); 
+%                             hsum = sum(pseudoHdr16bit);
+%                             while (hsum > 65535)
+%                                 hsum = mod(hsum,65536) + floor(hsum/65536);
+%                             end
+%                             hsum = 65535 - hsum;
+%                             hdr(41) = floor(hsum/256);  % UDP checksum
+%                             hdr(42) = mod(hsum,256);
+                            
+                            % SPEAD - first 8 bytes
+                            hdr(43) = 83;   % magic number, 0x53 = 83 decimal
+                            hdr(44) = 4;    % version = 4
+                            hdr(45) = 2;    % Item Pointer Width = 2
+                            hdr(46) = 6;    % Heap Address Width = 6
+                            hdr(47:48) = 0; % Reserved.
+                            hdr(49) = 0;    % Number of Items
+                            hdr(50) = 8;    
+                            % hdr(51:58) = SPEAD heap_counter (ID = 0x0001)
+                            hdr(51) = 128;  % msb = 1, indicates that heap_counter is immediate
+                            hdr(52) = 1;    % heap_counter item ID
+                            hdr(53) = floor((logicalChannel-1)/256);     % logical channel ID. Note it counts from 0.
+                            hdr(54) = mod((logicalChannel-1),256);
+                            hdr(55:58) = 0; % Packet counter. This counter is continuous for any given channel.
+                            % hdr(59:66) = SPEAD pkt_len (ID = 0x0004)
+                            hdr(59) = 128;  % msb = 1, indicates that pkt_len is immediate
+                            hdr(60) = 4;    % item ID
+                            hdr(61:66) = 0; % pkt_len is not used.
+                            % hdr(67:74) = SPEAD sync_time (ID = 0x1027)
+                            hdr(67) = 144;  % msb = 1, indicates sync_time is immediate, 0x80 + 0x10 = 0x90 = 144
+                            hdr(68) = 39;   % 39 = 0x27
+                            unixTime = posixtime(datetime(clock));  % Note this doesn't do timezones correctly.
+                            hdr(69) = floor(unixTime/2^40);
+                            hdr(70) = mod(floor(unixTime/2^32),256);
+                            hdr(71) = mod(floor(unixTime/2^24),256);
+                            hdr(72) = mod(floor(unixTime/2^16),256);
+                            hdr(73) = mod(floor(unixTime/2^8),256);
+                            hdr(74) = mod(unixTime,256);
+                            % hdr(75:82) = SPEAD timestamp (ID = 0x1600). Note LFAA ICD is unclear - this either counts in ns or in units of 1.25ns
+                            % Note 2048 samples per packet, with 1080 ns sampling period, so
+                            %  * For 1 ns counter, this will increment by 2048 * 1080 = 2211840 between packets.
+                            %  * For 1.25 ns counter, this will increment by 2048 * 1080/1.25 = 1769472 between packets.
+                            %
+                            hdr(75) = 150;  % msb = 1 for immediate value, and ID(15:8) = 0x16 so 0x96 = 150
+                            hdr(76) = 0;
+                            hdr(77) = floor(modelConfig.timestamp/2^40);
+                            hdr(78) = mod(floor(modelConfig.timestamp/2^32),256);
+                            hdr(79) = mod(floor(modelConfig.timestamp/2^24),256);
+                            hdr(80) = mod(floor(modelConfig.timestamp/2^16),256);
+                            hdr(81) = mod(floor(modelConfig.timestamp/2^8),256);
+                            hdr(82) = mod(modelConfig.timestamp,256);
+                            % hdr(83:90) = SPEAD center_freq (ID = 0x1011). Channel center frequency in Hz.  
+                            hdr(83) = 144;  % 0x80 + 0x10 = 0x90 = 144;
+                            hdr(84) = 17;   % 0x11
+                            channelFrequency = channel * 781250; % Channel center frequency in Hz; Note that channel 65 (the first possible channel) has a center frequency of 50781250 Hz.
+                            hdr(85) = floor(channelFrequency/2^40);
+                            hdr(86) = mod(floor(channelFrequency/2^32),256);
+                            hdr(87) = mod(floor(channelFrequency/2^24),256);
+                            hdr(88) = mod(floor(channelFrequency/2^16),256);
+                            hdr(89) = mod(floor(channelFrequency/2^8),256);
+                            hdr(90) = mod(channelFrequency,256);
+                            % hdr(91:98) = SPEAD csp_channel_info (ID = 0x3000)
+                            hdr(91) = 176;   % msb = 1, then 0x30 from ID => 0x80 + 0x30 = 0xB0 = 176
+                            hdr(92) = 0;     % low byte of ID = 0x00 
+                            hdr(93) = 0;     % reserved = 0
+                            hdr(94) = 0;     % reserved = 0
+                            hdr(95) = 0;     % high byte of beam, always 0.
+                            hdr(96) = arrayConfigFull.stationBeam(beamIndex).index;
+                            hdr(97) = floor(channel/256);
+                            hdr(98) = mod(channel,256);
+                            % hdr(99:106) = SPEAD csp_antenna_info (ID = 0x3001)
+                            hdr(99) = 176;   % msb = 1, then 0x30 from ID => 0x80 + 0x30 = 0xB0 = 176
+                            hdr(100) = 1;    % low byte of ID = 0x01
+                            hdr(101) = substationID;          % substation ID
+                            hdr(102) = subArrayIndex;         % subarray ID
+                            hdr(103) = floor(stationID/256);  % station ID (high byte)
+                            hdr(104) = mod(stationID,256);    % station ID (low byte)
+                            totalSubstations = 0;
+                            for s1 = 1:length(arrayConfigFull.stations)
+                                totalSubstations = totalSubstations + sum(arrayConfigFull.stations(s1).stationIDs == stationID);
+                            end
+                            nof_contributing_antenna = floor(256 / totalSubstations);  % 256 antennas divided equally among the substations
+                            hdr(105) = floor(nof_contributing_antenna/256);            % nof_contributing_antenna (high byte)
+                            hdr(106) = mod(nof_contributing_antenna,256);              % nof_contributing_antenna (low byte)
+                            % hdr(107:114) = SPEAD sample_offset (ID = 0x3300) (not used, set to 0).
+                            hdr(107) = 179;    % msb = 1, ID = 0x33 so 0xB3 = 179
+                            hdr(108) = 0;
+                            hdr(109:114) = 0;
+                            
+                            % Generate data for this logical channel and channel i.e. fpga(fpgaIndex).data(:,usedChannelCount)
+                            % Need the sinusoid for the delay rather than the polynomial approximation.
+                            for s1 = 1:length(sky)
+                                % Find each object in the sky which is in the view of this beam, i.e. sky(s1).index == skyIndex
+                                s2 = find(arrayConfigFull.stationsFull.logicalIDs == logicalID);
+                                thisStation.latitude = arrayConfigFull.stationsFull.latitude;
+                                thisStation.longitude = arrayConfigFull.stationsFull.longitude;
+                                thisStation.altitude = arrayConfigFull.stationsFull.altitude;
+                                thisStation.offsets = arrayConfigFull.stationsFull.offsets(s2,:);
+                                if (sky(s1).index == skyIndex)
+                                    delayFunction = getDelayFunctions(thisStation,sky(s1),modelConfig.time);
+                                    % reformat delayFunction into the form required by resampleNU.
+                                    delayOAFP(1) = delayFunction.offset;
+                                    delayOAFP(2) = delayFunction.amplitude;
+                                    delayOAFP(3) = delayFunction.rate;
+                                    delayOAFP(4) = delayFunction.phase;
+                                    resampledPoints = modelConfig.runtime * 408 * 2048; % Number of sample points to generate
+                                    % Get the data.
+                                    
+                                    
+                                    % Resample the data for this station
+                                    resampleNU(din,1080,channelFrequency,delayOAFP,resampledPoints)
+                                    keyboard
+                                end
+                                
+                            end
+                        end
+                    end
+                end
+            
+%            for channel = 1:something
+%                for beamIndex = 1:length(beamList)
+                
+                
+                
+                
+%            end
+            end
+        end
+        % At this point fpga(fpgaIndex).headers contains a list of headers for one instant in time.
+        % Replicate and modify this list so that fpga(fpgaIndex).headers has all the headers for the 
+        % full simulation time.
+%        for sampleTime = 1:something
+%        end
+        
         
     end
     
