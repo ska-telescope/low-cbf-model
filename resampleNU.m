@@ -23,8 +23,15 @@ filterTaps = 32; % Pick an even number for the code below to work. For filterTap
 NFilters = 512;  % 32 taps x 512 filters will fit in core i7 L2 cache - should be faster than if it doesn't...
 BWFrac = 1;
 [filters] = getInterpFilters(filterTaps,NFilters,BWFrac);
+ds = size(din);
+if (ds(2) ~= 1)
+    warning('data input must be a row vector');
+    din = din.';
+end
 
 resampled = zeros(resampledPoints,1);
+%Phase = 1.21341;
+
 for p = 1:resampledPoints
     % Delay in fractions of a sample 
     DelayOffset = (delay(1) + delay(2) * sin(delay(3) * (p-1)*Ts*1e-9 + delay(4)))/Ts;
@@ -35,7 +42,8 @@ for p = 1:resampledPoints
     
     % Interpolate 
     filterSelect = round(DelayOffsetFrac * NFilters);
-    resampled(p) = sum(filters(filterSelect+1,:) .* din((SampleOffset - filterTaps/2 + 1):(SampleOffset + filterTaps/2)));
+    resampled(p) = filters(filterSelect+1,:) * din((SampleOffset - filterTaps/2 + 1):(SampleOffset + filterTaps/2));
+    %resampled(p) = sum(filters(filterSelect+1,:) .* din((SampleOffset - filterTaps/2 + 1):(SampleOffset + filterTaps/2)));
     
     % Phase Rotation
     % amount of time past the nominal sampling point is (DelayOffsetFrac * Ts)*1e-9 ns

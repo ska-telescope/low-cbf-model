@@ -1491,7 +1491,7 @@ if (skyOutOfDate)
     % Data is stored as 
     % fpga(1:N) : Array with one entry for each FPGA. Each entry is a structure with fields as below, where M is the total number of packets to send.
     %   .headers : List of packet headers to send. Dimensions 114 x M. Data type is uint8.
-    %   .txTimes : Time to send each packet in seconds. Dimensions M x 1. Doubles.
+    %   .txTimes : Time to send each packet in nanoseconds. Dimensions M x 1. Doubles.
     %   .dataPointers : offset into .data field to take the data part of the packet from. Dimensions Mx2.
     %                   At each row, first entry is the row offset, second entry is the column offset.
     %                   column offset value of 1 or more selects a column from data.
@@ -1510,11 +1510,175 @@ if (skyOutOfDate)
     
     % Create the data as it comes from the sky
     % i.e. without taking into account the delays at each station
-    keyboard
+    %keyboard
     for s1 = 1:length(sky)
-        % add to the sky structure a list of coarse channels that are non-zero, and a raw data structure
-        % which is MxN, where M is the number of samples generated and N is the number of non-zero coarse channels.
-        
+        % Add two fields to each entry in the sky structure:
+        %  LFAAChannels : a list of coarse channels that are non-zero. N integers in the range 65-448.
+        %  rawData : Mx(2N) data structure with complex single precision data, where M is the number of samples generated and N is the number of non-zero coarse channels.
+        %            The factor of 2 in 2N for dual polarisation.
+        %            Data is stored in single precision to reduce the storage required. Data is only generated if sky(s1).power > 0, 
+        %            but the signal level of the generated data is NOT modulated by sky(s1).power. Power needs to be taken into account
+        %            when the data received at a given station is calculated later. Note that the received data at a particular station is the sum of
+        %            the all the different sky.data fields with a given sky.index (and different sky.subIndex)
+        if (sky(s1).power > 0)
+            % start and end frequency for the signal, in terms of fine channels.
+            % The Correlator filterbank createse 4096 fine channels. Due to the 32/27 oversampling, 
+            % there are 27/32 * 4096 = 3456 fine channel between coarse channels.
+            frequencyStart = sky(s1).coarse * 3456 + sky(s1).fine - sky(s1).BW/2;  % Note that frequency start is in units of correlator fine channels, so the actual frequency is frequencyStart * (1/1080e-9)/4096
+            frequencyEnd = sky(s1).coarse * 3456 + sky(s1).fine + sky(s1).BW/2;
+            coarseStart = round(frequencyStart / 3456);
+            fineStart = frequencyStart - coarseStart * 3456;
+            coarseEnd = round(frequencyEnd/3456);
+            fineEnd = frequencyEnd - coarseEnd * 3456;
+            % runtime is in integration periods of 0.9sec = 408 LFAA packets = 408 * 2048 coarse channel samples.
+            Nsamples = modelConfig.runtime * 408 * 2048;
+            Nsamples = 32768 * (1 + ceil(Nsamples/32768)); % Need a few extra samples for resampling. Round up to a multiple of 32768. 
+            if (sky(s1).sinusoids == 0)
+                % put in the list of coarse channels
+                sky(s1).LFAAChannels = (coarseStart:coarseEnd);
+                sky(s1).rawData = zeros(Nsamples,2*length(sky(s1).LFAAChannels),'single');
+                coarseCount = 0;
+                % Signal is filtered noise
+                for coarse = coarseStart:coarseEnd
+                    
+                    if (coarse == coarseStart)
+                        currentFineStart = fineStart;
+                    else
+                        currentFineStart = -3456/2;
+                    end
+                    if (coarse == coarseEnd)
+                        currentFineEnd = fineEnd;
+                    else
+                        currentFineEnd = 3456/2;
+                    end
+                    % Get some random data and filter it to the bandwidth required for this coarse channel.
+                    d1 = (1/sqrt(2)) * (randn(Nsamples,2) + 1i * randn(Nsamples,2));  % Two polarisations. Each will have variance 1.
+                    d1fft = fft(d1);
+                    % Blank out frequencies before currentFineStart
+                    if (round(Nsamples + 1 + Nsamples*currentFineStart/4096) <= Nsamples)
+                        % currentFineStart was negative
+                        d1fft((Nsamples/2 + 1):round(Nsamples + 1 + Nsamples*currentFineStart/4096),:) = 0;
+                    else
+                        % currentFineStart is positive, blank out all negative frequencies
+                        d1fft((Nsamples/2+1):Nsamples,:) = 0;
+                        % Blank out positive frequencies up to currentFineStart
+                        d1fft(1:(Nsamples*currentFineStart/4096),:) = 0;
+                    end
+                    % Blank out frequencies after currentFineEnd
+                    if (currentFineEnd < 0)
+                        d1fft(round(Nsamples + 1 + Nsamples*currentFineEnd/4096):Nsamples,:) = 0;
+                        d1fft(1:(Nsamples/2),:) = 0;
+                    else
+                        % currentFineEnd is positive
+                        d1fft(round(Nsamples*currentFineEnd/4096):(Nsamples/2),:) = 0;
+                    end
+                    
+                    d1 = ifft(d1fft);
+                    % Force each polarisation in d1 to have variance 1.
+                    d1(:,1) = d1(:,1)/std(d1(:,1));
+                    d1(:,2) = d1(:,2)/std(d1(:,2));
+                    
+                    % Make the polarization match p = sky(s1).polarisation
+                    % p is stokes parameters p = [I Q U V]
+                    % Let x,y be the horizontal and vertical components of the polarisation
+                    % So I = E(|x|^2) + E(|y|^2)
+                    %    Q = E(|x|^2) - E(|y|^2)
+                    %  U-iV = 2 * E(xy')
+                    %
+                    % Now given two complex signals a, b with E(|a|^2) = 1, E(|b|^2) = 1
+                    % Then set 
+                    %   x = na
+                    %   y = nka + mb
+                    % This will give the stokes parameters [I, Q, U, V] providing
+                    %   n = sqrt((I+Q)/2)
+                    %   k = (1/n^2) * (U-iV)/2
+                    %   m = (I-Q)/2 - n^2*k^2
+                    % 
+                    n = sqrt((sky(s1).polarisation(1) + sky(s1).polarisation(2))/2);
+                    if (n < 0.000001)
+                        k = 0;
+                    else
+                        k = (1/n^2) * (sky(s1).polarisation(3) - 1i * sky(s1).polarisation(4))/2;
+                    end
+                    m = sqrt((sky(s1).polarisation(1) - sky(s1).polarisation(2))/2 - n^2*(abs(k)^2));
+                    
+                    d2 = zeros(size(d1));
+                    d2(:,1) = n*d1(:,1);
+                    d2(:,2) = k*d2(:,1) + m * d1(:,2);
+                    
+                    sky(s1).rawData(:,(coarseCount+1:coarseCount+2)) = single(d2);
+                    coarseCount = coarseCount + 2; % Which column in sky(s1).rawData to put the signal into
+                    % Check
+                    %IQUV(1) = var(d2(:,1)) + var(d2(:,2));
+                    %IQUV(2) = var(d2(:,1)) - var(d2(:,2));
+                    %IQUV(3) = 2*mean(d2(:,1).*conj(d2(:,2)));
+                    %disp(IQUV)
+                    %keyboard
+                    
+                end
+            else
+                % Signal is a set of sinusoids
+                % put in the list of coarse channels
+                sky(s1).LFAAChannels = (coarseStart:coarseEnd);
+                sky(s1).rawData = zeros(Nsamples,2*length(sky(s1).LFAAChannels),'single');
+                coarseCount = 0;
+                % Signal is a set of sinusoids
+                % sky(s1).sinusoids = 1 => 1 sinusoid at the center frequency
+                % sky(s1).sinusoids = 2 => frequencies are [center - BW/2,center + BW/2]
+                % etc.
+                % Get a list of frequencies for the sinusoids
+                if (sky(s1).sinusoids == 1)
+                    flist = sky(s1).coarse * 3456 + sky(s1).fine;
+                else
+                    flist = [frequencyStart:(frequencyEnd-frequencyStart)/(sky(s1).sinusoids - 1):frequencyEnd];
+                end
+                for coarse = coarseStart:coarseEnd
+                    % Get the frequencies in units of fine channels for the start and end of this coarse channel,
+                    % and find anything in flist in that range
+                    fstart = round(coarse * 3456 - 1728);
+                    fend = round(coarse * 34566 + 1728);
+                    currentflist = flist(find((flist > fstart) && (flist < fend)));
+                    for f1 = 1:length(currentflist)
+                        thisF = currentflist(f1) - coarse * 3456; % the frequency in fine channels, offset from the center frequency of this coarse channel
+                        d1 = exp(1i*(0:(Nsamples-1)) * (1080e-9) * 2 * pi * (thisF * (1/1080e-9) / 4096));
+                        % Make the polarization match p = sky(s1).polarisation
+                        % p is stokes parameters p = [I Q U V]
+                        % Let x,y be the horizontal and vertical components of the polarisation
+                        % So I = E(|x|^2) + E(|y|^2)
+                        %    Q = E(|x|^2) - E(|y|^2)
+                        %  U-iV = 2 * E(xy')
+                        %
+                        % We can't actually make a finite set of sinusoids uncorrelated, so we just make the correlation term (U-iV) correct.
+                        % This means that we only generate a single source signal and small values for the correlation forces one of the
+                        % polarisations to have lower power.
+                        % So, given a complex signal a with E(|a|^2) = 1
+                        % Then set 
+                        %   x = na    (with n real)
+                        %   y = ma    (with m complex)
+                        % This will give the stokes parameters [I, Q, U, V]
+                        %   n = sqrt((I+Q)/2)
+                        %  |m| = sqrt((I-Q)/2)
+                        %  angle(m) = angle(U-iV)
+                        % (Providing the Stokes parameters imply the signal is fully polarised)
+                        n = sqrt((sky(s1).polarisation(1) + sky(s1).polarisation(2))/2);
+                        mabs = sqrt((sky(s1).polarisation(1) - sky(s1).polarisation(2))/2);
+                        mphase = angle((sky(s1).polarisation(3) - sky(s1).polarisation(4))/2);
+                        m = mabs * exp(1i*mphase);
+                        d2 = zeros(Nsamples,2);
+                        d2(:,1) = n*d1;
+                        d2(:,2) = m*d1;
+                        sky(s1).rawData(:,(coarseCount+1:coarseCount+2)) = sky(s1).rawData(:,(coarseCount+1:coarseCount+2)) + single(d2);
+                        coarseCount = coarseCount + 2; % Which column in sky(s1).rawData to put the signal into
+                    end
+                    % Check
+                    %IQUV(1) = var(sky(s1).rawData(:,1)) + var(sky(s1).rawData(:,2));
+                    %IQUV(2) = var(sky(s1).rawData(:,1)) - var(sky(s1).rawData(:,2));
+                    %IQUV(3) = 2*mean(sky(s1).rawData(:,1).*conj(sky(s1).rawData(:,2)));
+                    %disp(IQUV)
+                    %keyboard
+                end
+            end
+        end
     end
     
     %keyboard
@@ -1522,12 +1686,14 @@ if (skyOutOfDate)
     for fpgaIndex = 1:floor(length(stationList)/2)
         % Each FPGA gets data from up to 8 logical stations (2 stations x 4 substations)
         % Get a list of logical stations for this FPGA.
-        
+        disp(['Generating data for FPGA ' num2str(fpgaIndex)])
         logicalIDs = [];
         stationIDs = [];   % Each logicalID has a unique combination of stationID and a substationID
         substationIDs = [];
         channelCount = 0;   % count of the number of channels being sent to this FPGA. Can get up to 2*384.
         usedChannelCount = 0;  % count of the number of channels being sent to this FPGA that are non-zero.
+        resampledPoints = modelConfig.runtime * 408 * 2048; % Number of sample points to generate
+        
         if (((fpgaIndex-1)*2 + 2) <= length(stationList)) % two stations sending data to this FPGA
             stationsToThisFPGA = [stationList((fpgaIndex-1)*2 + 1) stationList((fpgaIndex-1)*2 + 2)];
         else
@@ -1566,8 +1732,8 @@ if (skyOutOfDate)
         end
         
         fpga(fpgaIndex).headers = zeros(114,totalChannels * modelConfig.runtime * 408,'uint8'); % Note runtime is in units of 0.9s integration periods; Each period is 408 packets worth. (408 * 2048 * 1080ns = 0.9024s)
+        fpga(fpgaIndex).data = zeros(resampledPoints*2,1,'int8');  % x2 for dual polarisation.
         
-        %keyboard
         logicalChannel = 0;  % logical channel is used in the SPEAD header. It counts channels for a particular station.
         for logicalIndex = 1:length(logicalIDs)
             logicalID = logicalIDs(logicalIndex);
@@ -1589,6 +1755,7 @@ if (skyOutOfDate)
                 warning(['Logical station ' num2str(logicalID) ' is not assigned to a sub array']);
                 channelList = [];
             else
+                
                 % Find the stationBeams for this subArray, and step through each of the channels for each stationBeam
                 for beamIndex = 1:length(arrayConfigFull.stationBeam)
                     if (arrayConfigFull.stationBeam(beamIndex).subArray == subArrayIndex)
@@ -1597,7 +1764,7 @@ if (skyOutOfDate)
                             channel = arrayConfigFull.stationBeam(beamIndex).channels(channelI);
                             % Count of the total number of channels coming to this FPGA
                             channelCount = channelCount + 1;
-                            % Count of the channels coming from this station
+                            % Count of the channels coming from this station.
                             logicalChannel = logicalChannel + 1;
                             % Generate the first header for this logical station and channel in fpga(fpgaIndex).headers(1:114,channelCount)
                             %  channel is arrayConfigFull.stationBeam(beamIndex).channels(channelI) 
@@ -1648,22 +1815,6 @@ if (skyOutOfDate)
                             % temporarily put in 0 for the UDP checksum.
                             hdr(41) = 0;
                             hdr(42) = 0;
-                            
-                            % UDP checksum calculation; do this later when data is available.
-%                             pseudoHdr(1:8) = hdr(27:34); % src and destination IP address
-%                             pseudoHdr(9) = 0;            % 0
-%                             pseudoHdr(10) = 17;          % protocol
-%                             pseudoHdr(11) = hdr(39);     % UDP length field, same as length field in the UDP header.
-%                             pseudoHdr(12) = hdr(40);  
-%                             pseudoHdr(13:18) = hdr(35:40); % source UDP port, destination UDP port, UDP length.
-%                             pseudoHdr16bit = 256 * pseudoHdr(1:2:18) + pseudoHdr(2:2:18); 
-%                             hsum = sum(pseudoHdr16bit);
-%                             while (hsum > 65535)
-%                                 hsum = mod(hsum,65536) + floor(hsum/65536);
-%                             end
-%                             hsum = 65535 - hsum;
-%                             hdr(41) = floor(hsum/256);  % UDP checksum
-%                             hdr(42) = mod(hsum,256);
                             
                             % SPEAD - first 8 bytes
                             hdr(43) = 83;   % magic number, 0x53 = 83 decimal
@@ -1743,66 +1894,188 @@ if (skyOutOfDate)
                             hdr(107) = 179;    % msb = 1, ID = 0x33 so 0xB3 = 179
                             hdr(108) = 0;
                             hdr(109:114) = 0;
+                            fpga(fpgaIndex).headers(:,channelCount) = hdr;
                             
                             % Generate data for this logical channel and channel i.e. fpga(fpgaIndex).data(:,usedChannelCount)
                             % Need the sinusoid for the delay rather than the polynomial approximation.
+                            skyIsNull = 1;
+                            
                             for s1 = 1:length(sky)
+                                hpol = zeros(resampledPoints,1);
+                                vpol = zeros(resampledPoints,1);
                                 % Find each object in the sky which is in the view of this beam, i.e. sky(s1).index == skyIndex
                                 s2 = find(arrayConfigFull.stationsFull.logicalIDs == logicalID);
                                 thisStation.latitude = arrayConfigFull.stationsFull.latitude;
                                 thisStation.longitude = arrayConfigFull.stationsFull.longitude;
                                 thisStation.altitude = arrayConfigFull.stationsFull.altitude;
                                 thisStation.offsets = arrayConfigFull.stationsFull.offsets(s2,:);
-                                if (sky(s1).index == skyIndex)
+                                if ((sky(s1).index == skyIndex) && (~isempty(sky(s1).rawData)))   % When the sky comes from an image, the first entry in sky is for station beam pointing only and has no data associated with it.
                                     delayFunction = getDelayFunctions(thisStation,sky(s1),modelConfig.time);
                                     % reformat delayFunction into the form required by resampleNU.
-                                    delayOAFP(1) = delayFunction.offset;
-                                    delayOAFP(2) = delayFunction.amplitude;
+                                    delayOAFP(1) = delayFunction.offset * 1e9;    % resampleNU requires nanseconds; getDelayFunctions returns seconds.
+                                    delayOAFP(2) = delayFunction.amplitude * 1e9;
                                     delayOAFP(3) = delayFunction.rate;
                                     delayOAFP(4) = delayFunction.phase;
-                                    resampledPoints = modelConfig.runtime * 408 * 2048; % Number of sample points to generate
-                                    % Get the data.
                                     
-                                    
-                                    % Resample the data for this station
-                                    resampleNU(din,1080,channelFrequency,delayOAFP,resampledPoints)
-                                    keyboard
+                                    % Get the data from the sky structure and resample it for this particular station.
+                                    % channel - the LFAA channel this packet is supplying
+                                    % sky(s1).LFAAChannels - list of coarse channels for this sky entry
+                                    % sky(s1).rawData - raw data 
+                                    if any(channel == sky(s1).LFAAChannels)
+                                        thisData = find(channel == sky(s1).LFAAChannels);
+                                        % Resample the data for this station, both polarisations
+                                        disp(['resample data, station logical ID = ' num2str(logicalID) ' channel = ' num2str(channel) ' sky index = ' num2str(sky(s1).index) ' sky subIndex = ' num2str(sky(s1).subIndex)]);
+                                        tic
+                                        % oddly, double precision is faster than single precision. Unclear why.
+                                        hpol = hpol + sqrt(sky(s1).power) * resampleNU(double(sky(s1).rawData(:,2*(thisData-1) + 1)),1080,channelFrequency,delayOAFP,resampledPoints);
+                                        vpol = vpol + sqrt(sky(s1).power) * resampleNU(double(sky(s1).rawData(:,2*(thisData-1) + 2)),1080,channelFrequency,delayOAFP,resampledPoints);
+                                        skyIsNull = 0;
+                                        toc
+                                    end 
                                 end
-                                
                             end
+                            % Put the data in hpol and vpol into fpga(fpgaIndex).data(:,usedChannelCount)
+                            % Note that the hpol and vpol samples alternate just as in the LFAA packet format.
+                            % Note for fpga().dataPointers : 
+                            %  .dataPointers = offset into .data field to take the data part of the packet from. Dimensions Mx2.
+                            %                  At each row, first entry is the row offset, second entry is the column offset.
+                            %                  column offset value of 1 or more selects a column from data.
+                            %                  column offset value of 0 indicates filling the data part with zeros.
+                            if (skyIsNull)
+                                % just indicate that the data associated with this header is zeros.
+                                fpga(fpgaIndex).dataPointers(channelCount,1) = 0;
+                                fpga(fpgaIndex).dataPointers(channelCount,2) = 0;  % 0 for zeros.
+                            else
+                                % Scale hpol, vpol so that RMS is as specified
+                                hpol = hpol * sky(s1).RMS / std(hpol);
+                                vpol = vpol * sky(s1).RMS / std(vpol);
+                                hpolReal = int8(real(hpol));
+                                hpolImag = int8(imag(hpol));
+                                vpolReal = int8(real(vpol));
+                                vpolImag = int8(imag(vpol));
+                                % Convert negative saturation to -127 instead of -128, as -128 is reserved for RFI.
+                                hpolRealLow = find(hpolReal < -127);
+                                hpolImagLow = find(hpolImag < -127);
+                                vpolRealLow = find(vpolReal < -127);
+                                vpolImagLow = find(vpolImag < -127);
+                                
+                                hpolReal(hpolRealLow) = -127; %#ok<FNDSB>
+                                hpolImag(hpolImagLow) = -127; %#ok<FNDSB>
+                                vpolReal(vpolRealLow) = -127; %#ok<FNDSB>
+                                vpolImag(vpolImagLow) = -127; %#ok<FNDSB>
+                                % put in the calculated data.
+                                usedChannelCount = usedChannelCount + 1;
+                                
+                                fpga(fpgaIndex).data(1:2:end,usedChannelCount) = complex(hpolReal,hpolImag);  % resampledPoints*2,
+                                fpga(fpgaIndex).data(2:2:end,usedChannelCount) = complex(vpolReal,vpolImag);
+                                fpga(fpgaIndex).dataPointers(channelCount,1) = 1;   % This is for the first header, so start at the start of the data.
+                                fpga(fpgaIndex).dataPointers(channelCount,2) = usedChannelCount;
+                            end
+                            
                         end
                     end
                 end
-            
-%            for channel = 1:something
-%                for beamIndex = 1:length(beamList)
-                
-                
-                
-                
-%            end
             end
         end
+        
         % At this point fpga(fpgaIndex).headers contains a list of headers for one instant in time.
         % Replicate and modify this list so that fpga(fpgaIndex).headers has all the headers for the 
-        % full simulation time.
-%        for sampleTime = 1:something
-%        end
+        % Note : totalChannels is the number of headers for a particular time for a particular FPGA.
+        %    fpga(fpgaIndex).headers = zeros(114,totalChannels * modelConfig.runtime * 408,'uint8');
+        dp1 = fpga(fpgaIndex).dataPointers;
+        fpga(fpgaIndex).dataPointers = zeros(totalChannels * modelConfig.runtime * 408,2);
+        fpga(fpgaIndex).dataPointers(1:totalChannels,:) = dp1;
         
+        for hdrCount = (totalChannels+1):(totalChannels * modelConfig.runtime * 408)
+            % Copy the headers from the previous instance for this channel.
+            fpga(fpgaIndex).headers(:,hdrCount) = fpga(fpgaIndex).headers(:,hdrCount - totalChannels);
+            % Change things that are different from the previous header.
+            % hdr(51:58) = SPEAD heap_counter (ID = 0x0001)
+            % hdr(55:58) = 0; % Packet counter. This counter is continuous for any given channel.
+            % add one to the existing packet counter
+            curPacketCounter = double(fpga(fpgaIndex).headers(58,hdrCount)) + 256 * double(fpga(fpgaIndex).headers(57,hdrCount)) + 256*256*double(fpga(fpgaIndex).headers(56,hdrCount)) + 256*256*256*double(fpga(fpgaIndex).headers(55,hdrCount));
+            curPacketCounter = curPacketCounter + 1;
+            fpga(fpgaIndex).headers(55,hdrCount) = floor(curPacketCounter/(256*256*256));
+            fpga(fpgaIndex).headers(56,hdrCount) = mod(floor(curPacketCounter/(256*256)),256);
+            fpga(fpgaIndex).headers(57,hdrCount) = mod(floor(curPacketCounter/(256)),256);
+            fpga(fpgaIndex).headers(58,hdrCount) = mod(curPacketCounter,256);
+
+            % hdr(75:82) = SPEAD timestamp (ID = 0x1600). Note LFAA ICD is unclear - this either counts in ns or in units of 1.25ns
+            %  Note 2048 samples per packet, with 1080 ns sampling period, so
+            %   * For 1 ns counter, this will increment by 2048 * 1080 = 2211840 between packets.
+            %   * For 1.25 ns counter, this will increment by 2048 * 1080/1.25 = 1769472 between packets.
+            curTimeStamp = double(fpga(fpgaIndex).headers(82,hdrCount)) + (2^8)*double(fpga(fpgaIndex).headers(81,hdrCount)) + (2^16)*double(fpga(fpgaIndex).headers(80,hdrCount)) + ...
+                           (2^24)*double(fpga(fpgaIndex).headers(79,hdrCount)) + (2^32)*double(fpga(fpgaIndex).headers(78,hdrCount)) + (2^40)*double(fpga(fpgaIndex).headers(77,hdrCount));
+            curTimeStamp = curTimeStamp + 2048 * 1080/1.25;
+            fpga(fpgaIndex).headers(77,hdrCount) = floor(curTimeStamp/(2^40));
+            fpga(fpgaIndex).headers(78,hdrCount) = mod(floor(curTimeStamp/(2^32)),256);
+            fpga(fpgaIndex).headers(79,hdrCount) = mod(floor(curTimeStamp/(2^24)),256);
+            fpga(fpgaIndex).headers(80,hdrCount) = mod(floor(curTimeStamp/(2^16)),256);
+            fpga(fpgaIndex).headers(81,hdrCount) = mod(floor(curTimeStamp/(2^8)),256);
+            fpga(fpgaIndex).headers(82,hdrCount) = mod(curTimeStamp,256);
+            % Put in the link to the data
+            fpga(fpgaIndex).dataPointers(hdrCount,:) = fpga(fpgaIndex).dataPointers(hdrCount - totalChannels,:);
+            fpga(fpgaIndex).dataPointers(hdrCount,1) = fpga(fpgaIndex).dataPointers(hdrCount,1) + 4096;  % 2048 samples per packet, data is interleaved between two polarisations, so plus 4096.
+        end
         
+        % Generate the transmit time for each header
+        % Packets should be evenly spaced.
+        % The number of packets that need to be sent in the time interval covered by the samples in the packet is "totalChannels"
+        % The time interval covered by the samples is 2048 * 1080 = 2211840 ns
+        packet_gap = 2048*1080 / totalChannels;  % Time gap between the start of successive packets in nanoseconds.
+        fpga(fpgaIndex).txTimes = [0:(totalChannels * modelConfig.runtime * 408 - 1)] * packet_gap;
+        
+        % UDP checksum calculation for each header
+        disp(['Calculating the UDP checksums for fpga ' num2str(fpgaIndex)]);
+        tic
+        for hdrCount = 1:(totalChannels * modelConfig.runtime * 408)
+            pseudoHdr(1:8) = double(fpga(fpgaIndex).headers(27:34,hdrCount)); % src and destination IP address
+            pseudoHdr(9) = 0;            % 0
+            pseudoHdr(10) = 17;          % protocol
+            pseudoHdr(11) = double(fpga(fpgaIndex).headers(39,hdrCount));     % UDP length field, same as length field in the UDP header.
+            pseudoHdr(12) = double(fpga(fpgaIndex).headers(40,hdrCount));  
+            pseudoHdr(13:18) = double(fpga(fpgaIndex).headers(35:40,hdrCount)); % source UDP port, destination UDP port, UDP length.
+            pseudoHdr16bit = 256 * pseudoHdr(1:2:18) + pseudoHdr(2:2:18);
+            % UDP checksum is header bytes 41, 42. The rest of the header (SPEAD) is from 43 to 114.
+            restOfHdr16bit = 256 * double(fpga(fpgaIndex).headers(43:2:114,hdrCount)) + double(fpga(fpgaIndex).headers(44:2:114,hdrCount));
+            % Data part
+            if (fpga(fpgaIndex).dataPointers(hdrCount,2) == 0)
+                % No data in .data, data is zeros.
+                sumData16bit = 0;
+            else
+                data16bit = 256 * real(double(fpga(fpgaIndex).data(fpga(fpgaIndex).dataPointers(hdrCount,1),fpga(fpgaIndex).dataPointers(hdrCount,2)))) + ...
+                                  imag(double(fpga(fpgaIndex).data(fpga(fpgaIndex).dataPointers(hdrCount,1),fpga(fpgaIndex).dataPointers(hdrCount,2))));
+                sumData16bit = sum(data16bit);
+            end
+            hsum = sum(pseudoHdr16bit) + sum(restOfHdr16bit) + sumData16bit;
+            while (hsum > 65535)
+                hsum = mod(hsum,65536) + floor(hsum/65536);
+            end
+            hsum = 65535 - hsum;
+            fpga(fpgaIndex).headers(41,hdrCount) = floor(hsum/256);  % Put the UDP checksum in the packet.
+            fpga(fpgaIndex).headers(42,hdrCount) = mod(hsum,256);
+            %keyboard
+        end
+        toc
+        %disp('Done calculating UDP checksums');
+        %keyboard
     end
-    
-    
-    
+    %keyboard
+    savename = [rundir '/LFAA'];
+    save(savename,'fpga');
 else
     disp('LFAA data is already up to date in LFAA.mat');
-    
 end
 
 %% 
-
+keyboard
 
 %%
 % Generate the register settings in the firmware from the LMC configuration
+
+% First module in the firmware is the LFAA SPEAD decoder
+% We need settings for
+%  - Lookup table to assign the virtual channel number
+%  - 
 
 

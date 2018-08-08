@@ -1,12 +1,13 @@
 function [skyout] = expandSky(skyin,rundir)
 % Adds the field "subIndex", and expands entries in sky that contain an image into a set of objects at each non-zero pixel in the image.
-%
+% When expanding an image into a set of discrete objects, an object with subIndex = 0 is created with power = 0. 
+% This object is just for pointing to the center of the field.
 %
 
 skyoutCount = 0;
 for skyobject = 1:length(skyin)
     skyimgName = skyin(skyobject).skyImage{1};
-    if (~isempty(skyimgName) > 0)
+    if (~isempty(skyimgName))
         % Filename provided for an image of the sky, expand it into a set of objects for each non-zero pixel
         % Each object created has a different subindex field. 
         % subindex = 0 is not an object, it is just used for pointing to the center of the field.

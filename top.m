@@ -14,14 +14,14 @@ toc
 %     
 % end
 
-din = sin(0:pi/3:(1e6 * pi/3 + 500));
+din = sin(0:pi/3:(2e6 * pi/3 + 500)) + 1i * cos(0:pi/3:(2e6 * pi/3 + 500));
 din_shift = sin(pi/12:pi/3:(1e6 * pi/3 + 500));
 Ts = 1080; % ns
-CF = 0;
+CF = 200e6;
 % delay = [offset, amplitude, frequency, phase] in ns and radians/sec
-delay = [Ts*40 + Ts/4 + Ts/2048, 0, 0, 0];
+delay = [Ts*40 + Ts/4 + Ts/2048, 20000, 2*pi/(60*60*24), 0];
 %delay = [Ts*40, 0, 0, 0];
-resampledPoints = 1e6;
+resampledPoints = 2e6;
 
 % unit vector pointing at the sky
 

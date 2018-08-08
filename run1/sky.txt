@@ -7,7 +7,7 @@
           "declination":[14.234],
           "rate":[20],
           "coarse":[100],
-          "fine":[1205],
+          "fine":[4],
           "RMS":[20],
           "sinusoids":[1],
           "polarisation":[1,0,1,0],
@@ -26,9 +26,9 @@
           "fine":[1000],
           "RMS":[20],
           "sinusoids":[0],
-          "polarisation":[1,0,0,0],
+          "polarisation":[1,0,0,-1],
           "BW":[1],
-          "skyImage":["fortytwo.png"],
+          "skyImage":["F6.png"],
           "skyImageDimension":[3]
           }
       ]

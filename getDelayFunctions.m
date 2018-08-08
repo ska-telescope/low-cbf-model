@@ -26,10 +26,11 @@ function [delayFunctions] = getDelayFunctions(stations,sky,observationTime)
 % with dimensions (number of stations)x4, representing a 3rd order polynomial approximation centered on the 
 % observation time. The polynomial fit is done to the data in a region of +/- 10 minutes.
 %
-doplot = 1;
+doplot = 0;
 c = 299792458;
 siderealSeconds = 23*60*60 + 56*60 + 4.0905; % seconds per sidereal day (23 hours, 56 minutes, 4.0905 seconds)
 siderealRate = 2*pi/(siderealSeconds);
+timeOffset = 30e-3;  % Constant offset applied to the delays so that we never generate negative delays.
 % Note : MWA coordinates are
 % Latitude: -26.70331940°, Longitude: 116.67081524°
 latitude = stations.latitude * pi/180;
@@ -75,7 +76,7 @@ for s = 1:totalStations
     v1 = [sin(dec), cos(ra)*cos(dec), sin(ra) * cos(dec)];
     % Three components of the dot product with a vector pointing at the station
     % the vertical component of the dot product is constant
-    delayFunctions.offset(s) = (1/c) * rCenter * sin(lat) * v1(1);
+    delayFunctions.offset(s) = (1/c) * rCenter * sin(lat) * v1(1) + timeOffset;
     % The other two components vary sinusoidally with time.
     % modelled as A*sin(time + P)
     delayFunctions.amplitude(s) = (1/c) * axialRadius * cos(dec);   % component in the horizontal plane [which = sqrt((axialRadius * v1(2))^2 + (axialRadius * v1(3))^2)]
