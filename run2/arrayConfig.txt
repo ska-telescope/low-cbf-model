@@ -1,0 +1,39 @@
+{
+   "global":{
+      "PSSMode":[1]
+   },
+   
+   "stations":[
+      {
+         "stationType":["300MHz"],
+         "location":[1,2,3,4,5,6],
+         "logicalIDs":[1]
+      }
+   ],
+
+   "subArray":[
+      {
+         "index":[1],
+         "stationType":["300MHz"],
+         "logicalIDs":[1,2,3,4,5,6]
+      }
+   ],
+
+   "stationBeam":[
+      {
+         "index":[1],
+         "subArray":[1],
+         "skyIndex":[1],
+         "channels":[73,74,75,76,77,78,79,80]
+      }
+   ],
+
+   "correlator":[
+      {
+         "subArray":[1],
+         "mode":["SPECTRAL_LINE"],
+         "stationBeam":[1]
+      }
+   ]
+   
+}

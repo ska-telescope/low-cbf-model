@@ -1,0 +1,20 @@
+{"sky":
+   [
+      [
+         {"index":[1],
+          "ascension":[20],
+          "declination":[10],
+          "rate":[1],
+          "coarse":[73],
+          "fine":[100],
+          "RMS":[20],
+          "sinusoids":[0],
+          "polarisation":[1,0,0,-1],
+          "BW":[20],
+          "skyImage":["twoDots.png"],
+          "skyImageDimension":[3]
+          }
+      ]
+
+   ]
+}
