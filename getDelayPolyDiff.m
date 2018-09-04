@@ -22,8 +22,3 @@ for s = 1:stations
     p = polyfit(t_fit,d1 - d2,3);
     poly(s,1:4) = p;
 end
-
-
-
-
-

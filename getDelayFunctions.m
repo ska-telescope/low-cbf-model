@@ -1,6 +1,7 @@
-function [delayFunctions] = getDelayFunctions(stations,sky,observationTime)
+function [delayFunctionsOut] = getDelayFunctions(stations,sky,observationTime,ignoreCommonMotion)
 % Generates delay functions for an object in the sky, for all the stations.
 % Delay functions are sinusoids, with DC offset, amplitude, phase offset and rate.
+% 
 %
 % Stations should be a struct with fields:
 %  .latitude  - latitude of the center point of the telescope, in degrees.
@@ -15,6 +16,9 @@ function [delayFunctions] = getDelayFunctions(stations,sky,observationTime)
 %  .index       - to index this object in the sky
 %  .subIndex    - The center of field for the object has subIndex = 0. This is used for telescope pointing.
 %                  subIndex 1 and higher is used for generating the sky.
+%
+% ignoreCommonMotion : 1 to find the delay relative to the delay at the center of the array. The
+%  center is found as the mean of the positions in the stations input.
 %
 % The output is a structure with fields
 %  .offset
@@ -31,6 +35,7 @@ c = 299792458;
 siderealSeconds = 23*60*60 + 56*60 + 4.0905; % seconds per sidereal day (23 hours, 56 minutes, 4.0905 seconds)
 siderealRate = 2*pi/(siderealSeconds);
 timeOffset = 30e-3;  % Constant offset applied to the delays so that we never generate negative delays.
+timeOffsetCommon = 1e-3;  % Constant offset applied to the delays when ignoring common motion.
 % Note : MWA coordinates are
 % Latitude: -26.70331940°, Longitude: 116.67081524°
 latitude = stations.latitude * pi/180;
@@ -56,16 +61,30 @@ rAxis = rCenter * cos(latitude);
 % delay of the object at the station is given by 
 %  D = d0 + A * sin(R*w*t + P)
 % where w is sidereal rate and t is time.
-delayFunctions.offset = zeros(totalStations,1);
-delayFunctions.amplitude = zeros(totalStations,1);
-delayFunctions.phase = zeros(totalStations,1);
-delayFunctions.rate = zeros(totalStations,1);
-delayFunctions.poly = zeros(totalStations,4);
+delayFunctions.offset = zeros(totalStations+1,1);
+delayFunctions.amplitude = zeros(totalStations+1,1);
+delayFunctions.phase = zeros(totalStations+1,1);
+delayFunctions.rate = zeros(totalStations+1,1);
+delayFunctions.poly = zeros(totalStations+1,4);
 
-for s = 1:totalStations
+% delayFunctions2 for the 
+delayFunctions2.offset = zeros(totalStations+1,1);
+delayFunctions2.amplitude = zeros(totalStations+1,1);
+delayFunctions2.phase = zeros(totalStations+1,1);
+delayFunctions2.rate = zeros(totalStations+1,1);
+delayFunctions2.poly = zeros(totalStations+1,4);
+
+
+for s = 1:(totalStations+1)
     % Convert east,north locations to actual latitude, longitude
-    long = stationLoc(s,1)/rAxis;  % Only use the offset for the longitude; This sets the zero for time such that a right ascension of 0 is on the horizon at t = 0
-    lat = latitude - stationLoc(s,2)/rCenter;
+    if (s == (totalStations + 1))
+        % Find the delay function for the center of the array
+        long = mean(stationLoc(:,1))/rAxis;
+        lat = latitude - mean(stationLoc(:,2))/rCenter;
+    else
+        long = stationLoc(s,1)/rAxis;  % Only use the offset for the longitude; This sets the zero for time such that a right ascension of 0 is on the horizon at t = 0
+        lat = latitude - stationLoc(s,2)/rCenter;
+    end
     
     % Distance from the earths axis for this station
     axialRadius = rCenter * cos(lat);
@@ -90,6 +109,23 @@ for s = 1:totalStations
     delayFunctions.rate(s) = sky.rate * siderealRate;
 end
 
+% Version with common motion removed
+% Difference between the delay function and the delay function for the average location in the array.
+for s = 1:totalStations
+    t1 = delayFunctions.amplitude(s) * cos(delayFunctions.phase(s)) - delayFunctions.amplitude(totalStations + 1) * cos(delayFunctions.phase(totalStations + 1));
+    t2 = delayFunctions.amplitude(s) * sin(delayFunctions.phase(s)) - delayFunctions.amplitude(totalStations + 1) * sin(delayFunctions.phase(totalStations + 1));
+    delayFunctions2.rate(s) = delayFunctions.rate(s);
+    delayFunctions2.phase(s) = atan(t2/t1);
+    delayFunctions2.amplitude(s) = t2/sin(delayFunctions2.phase(s));
+    delayFunctions2.offset(s) = delayFunctions.offset(s) - delayFunctions.offset(totalStations + 1) + timeOffsetCommon;
+end
+
+if (ignoreCommonMotion)
+    delayFunctionsOut = delayFunctions2;
+else
+    delayFunctionsOut = delayFunctions;
+end
+
 % Generate 3rd order polynomial approximations.
 % Note : CSP interface spec states "each polynomial is provided as an array of at most 4 coefficients"
 polyWindow = 10; % seconds
@@ -99,13 +135,16 @@ t = (observationTime - (polyWindow/2)):1:(observationTime + (polyWindow/2));
 t_fit = t + observationTime;
 
 for s = 1:totalStations
-    d = delayFunctions.offset(s) + delayFunctions.amplitude(s) * sin(delayFunctions.rate(s) * t + delayFunctions.phase(s));
+    d = delayFunctionsOut.offset(s) + delayFunctionsOut.amplitude(s) * sin(delayFunctionsOut.rate(s) * t + delayFunctionsOut.phase(s));
     p = polyfit(t_fit,d,3);
-    delayFunctions.poly(s,1:4) = p;
+    delayFunctionsOut.poly(s,1:4) = p;
 end
 
 if (doplot)
     clist = 'rgbcmyk';
+    
+    tplot = 10 * (((-polyWindow/2):0.1:(polyWindow/2)));
+    tfull = (0:100:siderealSeconds);
     % Plot the full delay functions
     figure(1);
     clf;
@@ -121,7 +160,7 @@ if (doplot)
     clf;
     hold on;
     grid on;
-    tplot = 10 * (((-polyWindow/2):0.1:(polyWindow/2)));
+    
     for s = 1:totalStations
         plot(tplot,delayFunctions.offset(s) + delayFunctions.amplitude(s) * sin(delayFunctions.rate(s) * tplot + delayFunctions.phase(s)),[clist(mod(s,7) + 1) '.-']);
         plot(tplot,delayFunctions.poly(s,1)*(tplot.^3) + delayFunctions.poly(s,2)*(tplot.^2) + delayFunctions.poly(s,3)*(tplot) + delayFunctions.poly(s,4),[clist(mod(s,7) + 1) 'o-']);
@@ -146,5 +185,33 @@ if (doplot)
     end
     title('True delay - polynomial approximation');
     
+    % Plot the difference between the delay function and the delay at the center of the array; also plot the analytic difference in delayFunctions2 to check
+    s = 1;  % Selects which function to check.
+    figure(4);
+    clf;
+    hold on;
+    grid on;
+    d1 = delayFunctions.offset(s) + delayFunctions.amplitude(s) * sin(delayFunctions.rate(s) * tplot + delayFunctions.phase(s));
+    d_analytic = delayFunctions2.offset(s) + delayFunctions2.amplitude(s) * sin(delayFunctions2.rate(s) * tplot + delayFunctions2.phase(s));
+    s = totalStations + 1;
+    d2 = delayFunctions.offset(s) + delayFunctions.amplitude(s) * sin(delayFunctions.rate(s) * tplot + delayFunctions.phase(s));
+    plot(d1 - d2 + timeOffsetCommon,'r.-');
+    plot(d_analytic,'go');
+    title('Difference in delays from center of array');
+    
+    figure(5);
+    clf;
+    hold on;
+    grid on;
+    s = 1;
+    d1 = delayFunctions.offset(s) + delayFunctions.amplitude(s) * sin(delayFunctions.rate(s) * tfull + delayFunctions.phase(s));
+    d_analytic = delayFunctions2.offset(s) + delayFunctions2.amplitude(s) * sin(delayFunctions2.rate(s) * tfull + delayFunctions2.phase(s));
+    s = totalStations + 1;
+    d2 = delayFunctions.offset(s) + delayFunctions.amplitude(s) * sin(delayFunctions.rate(s) * tfull + delayFunctions.phase(s));
+    plot(d1 - d2 + timeOffsetCommon,'r.-');
+    plot(d_analytic,'go');
+    title('Difference in delays from center of array');
+    
+    %keyboard
 end
 

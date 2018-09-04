@@ -7,8 +7,9 @@ function [resampled] = resampleNU(din,Ts,CF,delay,resampledPoints)
 %  CF : center frequency in Hz for the input data (impacts the doppler shift)
 %  delay : Time offset for sampling the signal, specified as a sinusoid with an array of 4 numbers
 %          [offset, amplitude, frequency, phase]
-%          delay = offset + amplitude * sin(frequency * t + phase)
+%          delay = offset + amplitude * sin(frequency * t + phase) + slope*t
 %           - offset and amplitude are in ns.
+%           - slope is in ns/s
 %           - phase is the phase at t=0, in radians.
 %           - frequency is in radians per second. e.g. for sidereal rate frequency = 2*pi/(24*60*60 - 235.9) 
 %             (note a sidereal day is 3 minutes 55.9 seconds = 235.9 seconds short)
@@ -22,7 +23,10 @@ function [resampled] = resampleNU(din,Ts,CF,delay,resampledPoints)
 filterTaps = 32; % Pick an even number for the code below to work. For filterTaps = 32, interpolation occurs between the samples aligned to filtertap 16 and 17 (using matlab indexing from 1)
 NFilters = 512;  % 32 taps x 512 filters will fit in core i7 L2 cache - should be faster than if it doesn't...
 BWFrac = 1;
-[filters] = getInterpFilters(filterTaps,NFilters,BWFrac);
+persistent filters;
+if isempty(filters)
+    [filters] = getInterpFilters(filterTaps,NFilters,BWFrac);
+end
 ds = size(din);
 if (ds(2) ~= 1)
     warning('data input must be a row vector');
@@ -30,11 +34,11 @@ if (ds(2) ~= 1)
 end
 
 resampled = zeros(resampledPoints,1);
-%Phase = 1.21341;
+fsel = zeros(resampledPoints,1);
 
 for p = 1:resampledPoints
-    % Delay in fractions of a sample 
-    DelayOffset = (delay(1) + delay(2) * sin(delay(3) * (p-1)*Ts*1e-9 + delay(4)))/Ts;
+    % Delay in fractions of a sample
+    DelayOffset = (delay(1) + delay(2) * sin(delay(3) * (p-1)*Ts*1e-9 + delay(4)) + delay(5) * (p-1) * Ts * 1e-9)/Ts;
     DelayOffsetInt = floor(DelayOffset);
     DelayOffsetFrac = DelayOffset - DelayOffsetInt;
     % Base delay offset in samples
@@ -42,6 +46,7 @@ for p = 1:resampledPoints
     
     % Interpolate 
     filterSelect = round(DelayOffsetFrac * NFilters);
+    fsel(p) = filterSelect;
     resampled(p) = filters(filterSelect+1,:) * din((SampleOffset - filterTaps/2 + 1):(SampleOffset + filterTaps/2));
     %resampled(p) = sum(filters(filterSelect+1,:) .* din((SampleOffset - filterTaps/2 + 1):(SampleOffset + filterTaps/2)));
     
@@ -49,7 +54,8 @@ for p = 1:resampledPoints
     % amount of time past the nominal sampling point is (DelayOffsetFrac * Ts)*1e-9 ns
     % then multiply by the center frequency (CF) to get the number of rotations.
     Phase = 2*pi*DelayOffsetFrac * Ts * 1e-9 * CF;
-    resampled(p) = resampled(p) * exp(1i * Phase);
-    
+    resampled(p) = resampled(p) * exp(1i * Phase);    
 end
+
+%keyboard
 
