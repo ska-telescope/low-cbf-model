@@ -44,17 +44,17 @@ end
 
 % Get the number of FPGAs for this configuration
 if (modelConfig.configuration == 0) 
-    modelConfig.LRUs = 3;
+    modelConfig.LRUs = 3;  % Max stations = 6
 elseif (modelConfig.configuration == 1)
-    modelConfig.LRUs = 12;
+    modelConfig.LRUs = 12; % Max stations = 24
 elseif (modelConfig.configuration == 2)
-    modelConfig.LRUs = 36;
+    modelConfig.LRUs = 36; % Max stations = 72
 elseif (modelConfig.configuration == 3) 
-    modelConfig.LRUs = 48;
+    modelConfig.LRUs = 48; % Max stations = 96
 elseif (modelConfig.configuration == 4)
-    modelConfig.LRUs = 144;
+    modelConfig.LRUs = 144; % Max stations = 256 (Note not 288)
 elseif (modelConfig.configuration == 5)
-    modelConfig.LRUs = 288;
+    modelConfig.LRUs = 288; % Max stations = 512 (Note not 576)
 else
     error('configuration field in modelConfig.txt must be in the range 0 to 5');
 end
@@ -62,7 +62,13 @@ end
 %% Check or insert Optional Fields
 
 if ~isfield(modelConfig,'stationMap')
-    modelConfig.stationMap = 1:(2*modelConfig.LRUs);
+    if (modelConfig.configuration == 4)
+        modelConfig.stationMap = 1:256;
+    elseif (modelConfig.configuration == 5)
+        modelConfig.stationMap = 1:512;
+    else
+        modelConfig.stationMap = 1:(2*modelConfig.LRUs);
+    end
 end
 
 if ~isfield(modelConfig,'keepLFAASPEADDecoder')
@@ -335,3 +341,10 @@ end
 if ~isfield(modelConfig,'timestamp')
     modelConfig.timestamp = 0;
 end
+
+% default for delayUpdatePeriod is 0, which is interpreted as never (i.e. the delay parameters are set once on startup).
+if ~isfield(modelConfig,'delayUpdatePeriod')
+    modelConfig.delayUpdatePeriod = 0;  
+end
+
+
