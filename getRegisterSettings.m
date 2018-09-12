@@ -49,6 +49,7 @@ function [LRUreg] = getRegisterSettings(arrayConfigFull,modelConfig)
 %% Assign default values to the registers.
 defaultReg.zxy = [1, 1, 1];
 defaultReg.virtualChannel = zeros(1024,1,'uint32');
+% LD : Registers for Local Doppler module
 defaultReg.LDStation0ID = 0;
 defaultReg.LDStation1ID = 0;
 % Work out how many delay updates we need
@@ -63,8 +64,12 @@ defaultReg.LDcountOffset1 = zeros(1,updates);
 defaultReg.LDstartPhase = zeros(1024,updates);
 defaultReg.LDphaseStep = zeros(1024,updates);
 defaultReg.LDvalidFrom = zeros(1,updates);
+% CCT : Registers for Coarse Corner Turn module
+defaultReg.CCTcoarseDelay = zeros(768,modelConfig.runtime,'uint32');
 
 LRUreg(1:modelConfig.LRUs) = defaultReg;
+
+fullVirtualChannelTable = zeros(modelConfig.LRUs*1024,11,'int16');  % Use int16 to limit how big this gets.
 
 %% Set register values.
 for LRU = 1:modelConfig.LRUs
@@ -133,7 +138,9 @@ for LRU = 1:modelConfig.LRUs
             % Columns in virtualChannelTable
             %  1 => frequency_id, 2 => beam_id, 3 => substation_id, 4 => subarray_id, 5 => station_id, 
             %  6 => index X into arrayConfigFull.stationBeam(X), 7 => index X into arrayConfigFull.subArray(X), 8 => logical ID, 9 => table entry is unused
-            virtualChannelTable = zeros(512,9);
+            % 10 => LRU this stationID came in on.
+            % 11 => Virtual Channel.
+            virtualChannelTable = zeros(512,11);
 
             for subArray = 1:length(subArrayIDs)
                 currentSubArray = subArrayIDs(subArray);
@@ -155,6 +162,9 @@ for LRU = 1:modelConfig.LRUs
                             virtualChannelTable(virtualChannelCount,6) = b1;  % Just for convenience; used later in this function to look up the correct stationBeam parameters for this entry.
                             virtualChannelTable(virtualChannelCount,7) = subArrayIndexes(subArray);  % Also just for convenience; used to look up the subarray this virtual channel is part of.
                             virtualChannelTable(virtualChannelCount,8) = logicalIDs(subArray);  % logical ID
+                            virtualChannelTable(virtualChannelCount,9) = 0; % this entry is not invalid.
+                            virtualChannelTable(virtualChannelCount,10) = LRU;
+                            virtualChannelTable(virtualChannelCount,11) = virtualChannelCount-1;
                         end
                     end
                 end
@@ -169,7 +179,6 @@ for LRU = 1:modelConfig.LRUs
                                                 virtualChannelTable(vc,3) * 2^13 + ...
                                                 virtualChannelTable(vc,4) * 2^16 + ...
                                                 virtualChannelTable(vc,5) * 2^21);
-                virtualChannelTable(vc,9) = 0; % this entry is not invalid.
             end
             virtualChannelTemp((virtualChannelCount+1):512) = uint32(2^31);  % just set the top bit to indicate the entry is invalid.
             virtualChannelTable((virtualChannelCount+1):512,9) = 1; % This entry is invalid.
@@ -185,13 +194,13 @@ for LRU = 1:modelConfig.LRUs
         if (station == 0)
             LRUreg(LRU).virtualChannel(1:512) = virtualChannelTemp;
             LRUreg(LRU).stationID(1) = station_id;       % record which station we expect to get data from.
-            virtualChannelTable0 = virtualChannelTable;  % store for easier reference in this function.
+            %LRUreg(LRU).virtualChannelTable0 = virtualChannelTable;  % store for easier reference in this function.
         else
             LRUreg(LRU).virtualChannel(513:1024) = virtualChannelTemp;
             LRUreg(LRU).stationID(2) = station_id;
-            virtualChannelTable1 = virtualChannelTable;  % store for easier reference in this function.
+            %LRUreg(LRU).virtualChannelTable1 = virtualChannelTable;  % store for easier reference in this function.
         end
-       
+        fullVirtualChannelTable(((LRU-1)*1024 + 512 * station + 1):((LRU-1)*1024 + 512 * station + 512),:) = int16(virtualChannelTable);
     end
     
     %% Registers for LocalDoppler module (LD)
@@ -210,11 +219,7 @@ for LRU = 1:modelConfig.LRUs
     %LRUreg(LRU).LDphaseIncrement
     % Step through the virtual channel tables and derive the start phase and phase increment from the delay Polynomials.
     for station = 0:1
-        if (station == 0)
-            virtualChannelTable = virtualChannelTable0;
-        else
-            virtualChannelTable = virtualChannelTable1;
-        end
+        virtualChannelTable = double(fullVirtualChannelTable(((LRU-1)*1024 + 512 * station + 1):((LRU-1)*1024 + 512 * station + 512),:));
         for virtualChannel = 1:384
             
             if (virtualChannelTable(virtualChannel,9) == 0) % Not invalid, i.e. valid.
@@ -298,7 +303,9 @@ for LRU = 1:modelConfig.LRUs
     % For all cases of modelConfig.configuration, there are 768 distinct data sets that the coarse corner turn deals with.
     % Registers for each LRU:
     %  - .CCTcoarseDelay : Table with 768 entries, listing the virtual channel, station ID and coarse delay
-    %    In the firmware, the table defines the read order out of the DDR memory (i.e. the first table entry is the first station & virtual channel read out).
+    %     This table defines the read order out of the DDR memory (i.e. the first table entry is the first station & virtual channel read out).
+    %     There are two copies of this table in the firmware to enable updating the table without generating glitches. In the model,
+    %     this is a matrix with one column for each 0.9 second integration period.
     %  - .CCTstationList : Table listing all the stations used in this LRU (This will be the same for all LRUs with the same X,Y coordinates).
     %  - .CCTvirtualChannelOffset : The virtual channel offset is the first virtual channel sent to this FPGA. This is defined by the Z coordinate.
     
@@ -311,22 +318,60 @@ for LRU = 1:modelConfig.LRUs
     end
     LRUreg(LRU).CCTstationList = stationList;
     LRUreg(LRU).virtualChannelOffset = LRUreg(LRU).zxy(1) - 1;
+    if (modelConfig.configuration == 0)
+        virtualChannelStepsize = 3;  % For PISA, every 3rd virtual channel goes to a given LRU
+    elseif (modelConfig.configuration == 1)
+        virtualChannelStepsize = 2;
+    elseif (modelConfig.configuration == 2)
+        virtualChannelStepsize = 6;
+    elseif (modelConfig.configuration == 3)
+        virtualChannelStepsize = 4;
+    else
+        virtualChannelStepsize = 8;
+    end
     
     % Now get the actual coarse delays
-    
-    
+    if isempty(LRUreg(LRU).CCTstationList)
+        LRUreg(LRU).CCTenable = 0;
+        LRUreg(LRU).CCTcoarseDelay = zeros(768,modelConfig.runtime,'uint32');  % Note modelConfig.runtime is the number of 0.9 second integration periods.
+    else
+        LRUreg(LRU).CCTenable = 1;
+        LRUreg(LRU).CCTcoarseDelay = zeros(768,modelConfig.runtime,'uint32');
+        allVirtualChannels = LRUreg(LRU).virtualChannelOffset:virtualChannelStepsize:383;
+        for virtualChannelCount = 1:128
+            virtualChannel = allVirtualChannels(virtualChannelCount);
+            for stationIndex = 1:length(stationList)
+                stationID = stationList(stationIndex);
+                % Look up this stationID and virtual Channel in fullVirtualChannelTable
+                %keyboard
+                fullIndex = find((fullVirtualChannelTable(:,5) == stationID) & (fullVirtualChannelTable(:,11) == virtualChannel));
+                % Get the delay polynomial for this station and beam
+                if (fullVirtualChannelTable(fullIndex,9) == 0) % Not invalid, i.e. valid.
+                    logicalIDIndex = find(arrayConfigFull.subArray(fullVirtualChannelTable(fullIndex,7)).logicalIDs == fullVirtualChannelTable(fullIndex,8));
+                    delayPoly = arrayConfigFull.stationBeam(fullVirtualChannelTable(fullIndex,6)).delayPolynomial(logicalIDIndex,:);  % The delay polynomial for this virtual channel 
+                else
+                    delayPoly = [0 0 0 0];  % Not a valid virtual channel, just set the polynomial to zeros.
+                end
+                for frame = 1:modelConfig.runtime
+                    currentTime = (frame - 1) * 1080e-9 * 2048 * 408;
+                    % Evaluate the delay polynomial 
+                    delaySeconds = delayPoly(1) * currentTime^3 + delayPoly(2) * currentTime^2 + delayPoly(3) * currentTime + delayPoly(4);
+                    delaySamples = round(delaySeconds/(1080e-9));
+                    if ((delaySamples < 0) || (delaySamples > 4095))
+                        error(['Calculated Coarse Delay is ' num2str(delaySamples) ' LFAA samples. It must be between 0 and 4095']);
+                    end
+                    LRUreg(LRU).CCTcoarseDelay((virtualChannelCount-1)*6 + (stationIndex-1) + 1,frame) = virtualChannel * (2^21) + stationID*(2^12) + delaySamples;
+                end
+            end
+        end
+    end
     
     keyboard
-   % for station = 0:1
-   %     if (((LRU-1)*2 + station + 1) <= length(modelConfig.stationMap))
-   %         station_id = modelConfig.stationMap((LRU-1)*2 + station + 1);
-   %     end
-  %  end
-   % for 
-   %     for station = 
-   %         
-   %     end 
-   % end
     
 end
+
+
+ %% Registers for the filterbanks
+
+
 
