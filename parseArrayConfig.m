@@ -114,6 +114,17 @@ for s1 = 1:length(arrayConfig.stations)
     end
     newLogicalIDs = (ss1.logicalIDs:(ss1.logicalIDs + stationType * length(ss1.location) - 1));
     stationsFull.logicalIDs((totalLogicalIDs+1):(totalLogicalIDs + stationType * length(ss1.location))) = newLogicalIDs;
+    
+    if isfield(ss1,'polarisationOffsets')
+        if (length(ss1.polarisationOffsets) == stationType * length(ss1.location))
+            stationsFull.polarisationOffsets((totalLogicalIDs+1):(totalLogicalIDs + stationType * length(ss1.location))) = ss1.polarisationOffsets * 1e-9;
+        else
+            stationsFull.polarisationOffsets((totalLogicalIDs+1):(totalLogicalIDs + stationType * length(ss1.location))) = ss1.polarisationOffsets(1) * 1e-9 * ones(stationType * length(ss1.location),1);
+        end
+    else
+        stationsFull.polarisationOffsets((totalLogicalIDs+1):(totalLogicalIDs + stationType * length(ss1.location))) = zeros(stationType * length(ss1.location),1);
+    end
+    
     stationsFull.stationTypes((totalLogicalIDs+1):(totalLogicalIDs + stationType * length(ss1.location))) = stationType;
     if (stationType == 1)
         stationsFull.substationIDs((totalLogicalIDs+1):(totalLogicalIDs + stationType * length(ss1.location))) = 1;
@@ -360,6 +371,7 @@ for s1 = 1:length(arrayConfig.stationBeam)
             polyIndexList = [polyIndexList find(stationsFull.logicalIDs == logicalID)];
         end
         sb2.delayPolynomial = delayPolys.poly(polyIndexList,:);
+        sb2.HVOffset = stationsFull.polarisationOffsets(polyIndexList);
     else
         error('Missing field : Each entry in stationBeam in arrayConfig.txt must have a field "skyIndex"');
     end

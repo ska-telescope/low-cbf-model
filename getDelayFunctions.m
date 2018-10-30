@@ -1,7 +1,7 @@
 function [delayFunctionsOut] = getDelayFunctions(stations,sky,observationTime,ignoreCommonMotion)
 % Generates delay functions for an object in the sky, for all the stations.
 % Delay functions are sinusoids, with DC offset, amplitude, phase offset and rate.
-% 
+% Also returns the delay function for the center of the array, in the last entry in delayFunctionsOut.
 %
 % Stations should be a struct with fields:
 %  .latitude  - latitude of the center point of the telescope, in degrees.

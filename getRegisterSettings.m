@@ -1,7 +1,13 @@
-function [LRUreg] = getRegisterSettings(arrayConfigFull,modelConfig)
+function [LRUreg, globalreg] = getRegisterSettings(arrayConfigFull,modelConfig)
 %
 % Generate the register settings in the firmware from the LMC configuration
-% Returns LRUreg, an array of structs, where each struct has the registers for a single LRU ( = 1 FPGA).
+% Returns:
+%  LRUreg - an array of structs, where each struct has the registers for a single LRU ( = 1 FPGA).
+%  globalReg - Register settings (or possibly ROM values) that are common to all FPGAs, e.g. filterbank taps.
+%
+% ------------------------------------------------------------------------------
+% LRUreg
+%
 % There is a field for each register setting. These are named according the module and register name in the firmware.
 % Also see the module level documentation on confluence.
 % In some cases the register settings can change over time. To accomodate this, revised register settings are included
@@ -27,12 +33,6 @@ function [LRUreg] = getRegisterSettings(arrayConfigFull,modelConfig)
 %  (3) coarseCornerTurner (CCT)
 %      - .
 %          * Sample delays for each station & channel
-%  (4) correlatorFilterbank
-%      - FIR Filter Coefficients
-%  (5) PSSFilterbank
-%      - FIR Filter Coefficients
-%  (6) PSTFilterbank
-%      - FIR Filter Coefficients
 %  (4) Fine Delay
 %      - phase slopes 
 % 
@@ -45,13 +45,26 @@ function [LRUreg] = getRegisterSettings(arrayConfigFull,modelConfig)
 %  (7) Packetiser config (SPEAD, PSS, VDIF)
 %      - MAC/IP/UDP addresses etc.
 %
+% ------------------------------------------------------------------------------
+% globalreg
+% 
+%  (1) correlatorFilterbank
+%      - .correlatorFilterbank  : FIR filter coefficients for the correlator filterbank
+%  (2) PSSFilterbank
+%      - .PSSFilterbank : FIR Filter Coefficients
+%  (3) PSTFilterbank
+%      - .PSTFilterbank : FIR Filter Coefficients
+% 
+%
+%
+
 
 %% Assign default values to the registers.
 defaultReg.zxy = [1, 1, 1];
 defaultReg.virtualChannel = zeros(1024,1,'uint32');
 % LD : Registers for Local Doppler module
-defaultReg.LDStation0ID = 0;
-defaultReg.LDStation1ID = 0;
+defaultReg.LDStationID0 = 0;
+defaultReg.LDStationID1 = 0;
 % Work out how many delay updates we need
 if (modelConfig.delayUpdatePeriod == 0)
     updates = 1; % i.e. just the initial value.
@@ -61,11 +74,11 @@ else
 end
 defaultReg.LDcountOffset0 = zeros(1,updates);
 defaultReg.LDcountOffset1 = zeros(1,updates);
-defaultReg.LDstartPhase = zeros(1024,updates);
-defaultReg.LDphaseStep = zeros(1024,updates);
+defaultReg.LDstartPhase = zeros(1536,updates);
+defaultReg.LDphaseStep = zeros(1536,updates);
 defaultReg.LDvalidFrom = zeros(1,updates);
 % CCT : Registers for Coarse Corner Turn module
-defaultReg.CCTcoarseDelay = zeros(768,modelConfig.runtime,'uint32');
+defaultReg.CCTdelayTable = zeros(768,modelConfig.runtime,'int32');
 
 LRUreg(1:modelConfig.LRUs) = defaultReg;
 
@@ -108,9 +121,14 @@ for LRU = 1:modelConfig.LRUs
         if (((LRU-1)*2 + station + 1) <= length(modelConfig.stationMap))
             station_id = modelConfig.stationMap((LRU-1)*2 + station + 1);
             % Get all the logical IDs associated with this station ID
-            IDindex = find(arrayConfigFull.stations.stationIDs == station_id);
-            logicalIDs = arrayConfigFull.stations.logicalIDs(IDindex);
-            substationIDs = arrayConfigFull.stations.substationIDs(IDindex);
+            logicalIDs = [];
+            substationIDs = [];
+            for stype = 1:length(arrayConfigFull.stations)
+                IDindex = find(arrayConfigFull.stations(stype).stationIDs == station_id);
+                logicalIDs = [logicalIDs arrayConfigFull.stations(stype).logicalIDs(IDindex)];
+                substationIDs = [substationIDs arrayConfigFull.stations(stype).substationIDs(IDindex)];
+            end
+            
             % Search the subarrays for these logical IDs - Note each logical ID can only be a member of a single subArray
             subArrayIDs = zeros(length(logicalIDs),1);
             subArrayIndexes = zeros(length(logicalIDs),1);
@@ -204,16 +222,16 @@ for LRU = 1:modelConfig.LRUs
     end
     
     %% Registers for LocalDoppler module (LD)
-    % .LDStation0ID
-    % .LDStation1ID
+    % .LDStationID0
+    % .LDStationID1
     % .LDcountOffset0
     % .LDcountOffset1
     % .LDstartPhase
     % .LDphaseStep
     % .LDvalidFrom     
     
-    LRUreg(LRU).LDStation0ID = modelConfig.stationMap((LRU-1)*2 + 1);
-    LRUreg(LRU).LDStation1ID = modelConfig.stationMap((LRU-1)*2 + 2);
+    LRUreg(LRU).LDStationID0 = modelConfig.stationMap((LRU-1)*2 + 1);
+    LRUreg(LRU).LDStationID1 = modelConfig.stationMap((LRU-1)*2 + 2);
     
     %LRUreg(LRU).LDstartPhase
     %LRUreg(LRU).LDphaseIncrement
@@ -225,8 +243,10 @@ for LRU = 1:modelConfig.LRUs
             if (virtualChannelTable(virtualChannel,9) == 0) % Not invalid, i.e. valid.
                 logicalIDIndex = find(arrayConfigFull.subArray(virtualChannelTable(virtualChannel,7)).logicalIDs == virtualChannelTable(virtualChannel,8));
                 delayPoly = arrayConfigFull.stationBeam(virtualChannelTable(virtualChannel,6)).delayPolynomial(logicalIDIndex,:);  % The delay polynomial for this virtual channel 
+                HVOffset = arrayConfigFull.stationBeam(virtualChannelTable(virtualChannel,6)).HVOffset(logicalIDIndex);  % Offsets between the horizontal and vertical polarisations.
             else
                 delayPoly = [0 0 0 0];  % Not a valid virtual channel, just set the polynomial to zeros.
+                HVOffset = 0;
             end
             
             % Work out how many delay updates we need
@@ -256,14 +276,21 @@ for LRU = 1:modelConfig.LRUs
                 if (virtualChannelTable(virtualChannel,9) == 0) % Not invalid, i.e. valid.
                     LRUreg(LRU).LDcountOffset0(1,update) = round(currentTimeRounded / (2048 * 1080e-9));
                     LRUreg(LRU).LDcountOffset1(1,update) = round(currentTimeRounded / (2048 * 1080e-9));
-                    LRUreg(LRU).LDstartPhase(station*512 + virtualChannel,update) = round(2^32 * rem(initialDelay,skyPeriod)/skyPeriod);
-                    % Note (DdelayDt / skyPeriod) = Doppler revolutions per second, 
-                    LRUreg(LRU).LDphaseStep(station*512 + virtualChannel,update) = round((2^35)*(1080e-9)*(DdelayDt / skyPeriod));
+                    
+                    % Note (DdelayDt / skyPeriod) = Doppler revolutions per second.
+                    % First 384 = horizontal polarisation
+                    LRUreg(LRU).LDstartPhase(station*768 + virtualChannel,update) = round(2^32 * rem(initialDelay,skyPeriod)/skyPeriod);
+                    LRUreg(LRU).LDphaseStep(station*768 + virtualChannel,update) = round((2^35)*(1080e-9)*(DdelayDt / skyPeriod));
+                    % Second 384 = vertical polarisation
+                    LRUreg(LRU).LDstartPhase(station*768 + 384 + virtualChannel,update) = round(2^32 * rem(initialDelay + HVOffset,skyPeriod)/skyPeriod);
+                    LRUreg(LRU).LDphaseStep(station*768 + 384 + virtualChannel,update) = round((2^35)*(1080e-9)*(DdelayDt / skyPeriod));
                 else % This virtual channel is not used.
                     LRUreg(LRU).LDcountOffset0(1,update) = 0;
                     LRUreg(LRU).LDcountOffset1(1,update) = 0;
-                    LRUreg(LRU).LDstartPhase(station*512 + virtualChannel,update) = 0;
-                    LRUreg(LRU).LDphaseStep(station*512 + virtualChannel,update) = 0;
+                    LRUreg(LRU).LDstartPhase(station*768 + virtualChannel,update) = 0;
+                    LRUreg(LRU).LDphaseStep(station*768 + virtualChannel,update) = 0;
+                    LRUreg(LRU).LDstartPhase(station*768 + 384 + virtualChannel,update) = 0;
+                    LRUreg(LRU).LDphaseStep(station*768 + 384 + virtualChannel,update) = 0;
                 end
                 LRUreg(LRU).LDvalidFrom(1,update) = currentTimeRounded;
                 
@@ -273,11 +300,12 @@ for LRU = 1:modelConfig.LRUs
             % Check the maximum size of the phase discontinuity at the update boundaries
             if (updates > 1)
                 for update = 2:updates
-                    predictedPhase = (2^(-32)) * LRUreg(LRU).LDstartPhase(station*512 + virtualChannel,update-1) + (2^(-35)) * 2048 * LRUreg(LRU).LDphaseStep(station*512 + virtualChannel,update) * (LRUreg(LRU).LDcountOffset0(1,update) - LRUreg(LRU).LDcountOffset0(1,update-1));
-                    actualPhase = (2^(-32)) * LRUreg(LRU).LDstartPhase(station*512 + virtualChannel,update);
+                    predictedPhase = (2^(-32)) * LRUreg(LRU).LDstartPhase(station*768 + virtualChannel,update-1) + (2^(-35)) * 2048 * LRUreg(LRU).LDphaseStep(station*768 + virtualChannel,update) * (LRUreg(LRU).LDcountOffset0(1,update) - LRUreg(LRU).LDcountOffset0(1,update-1));
+                    actualPhase = (2^(-32)) * LRUreg(LRU).LDstartPhase(station*768 + virtualChannel,update);
                     phaseError = predictedPhase - actualPhase - round(predictedPhase - actualPhase); % It is possible to be out by whole rotations due to dropping whole rotations from the 32 bit representation in the LDstartPhase register.
                     if (phaseError > 0.001)
                         disp(['Warning : Linear approximation phase error is ' num2str(phaseError) ' rotations. Use a shorter update period for the local Doppler parameters.']);
+                        keyboard
                     end
                 end
             end
@@ -295,21 +323,20 @@ for LRU = 1:modelConfig.LRUs
     % For modelConfig.configuration of
     %  - 0 (PISA,     3 LRUs,  6 stations,   Z connect = 3) : Each corner turner has all 6 stations for 384/3 = 128 of the virtual channels. Virtual channels are in steps of 3 (i.e. 0, 3, 6... or 1, 4, 7... or 2, 5, 8...)
     %  - 1 (AA1,     12 LRUs,  24 stations,  Z connect = 2) : Each corner turner has 4 stations for 384/2 = 192 of the virtual channels. Virtual channels are in steps of 2.
-    %  - 2 (AA2,     36 LRUs,  72 stations,  Z connect = 6) : Each corner turner has 12 stations for 384/6 = 64 of the virtual channels. Virtual channels are in steps of 6.
+    %  - 2 (AA2,     36 LRUs,  72 stations,  Z connect = 2) : Each corner turner has 4 stations for 384/2 = 192 of the virtual channels. Virtual channels are in steps of 2.
     %  - 3 (AA3-ITF, 48 LRUs,  96 stations,  Z connect = 4) : Each corner turner has 8 stations for 384/4 = 96 of the virtual channels. Virtual channels are in steps of 4.
     %  - 4 (AA3-CPF, 144 LRUs, 256 stations, Z connect = 8) : Each corner turner has 16 stations for 384/8 = 48 of the virtual channels. Virtual channels are in steps of 8.
     %  - 5 (AA4,     288 LRUs, 512 stations, Z connect = 8) : Each corner turner has 16 stations for 384/8 = 48 of the virtual channels. Virtual channels are in steps of 8.
     % 
     % For all cases of modelConfig.configuration, there are 768 distinct data sets that the coarse corner turn deals with.
     % Registers for each LRU:
-    %  - .CCTcoarseDelay : Table with 768 entries, listing the virtual channel, station ID and coarse delay
-    %     This table defines the read order out of the DDR memory (i.e. the first table entry is the first station & virtual channel read out).
+    %  - .CCTdelayTable : Table with 1536 entries, coarse delay and fine delay parameters for each station/channel combination.
     %     There are two copies of this table in the firmware to enable updating the table without generating glitches. In the model,
     %     this is a matrix with one column for each 0.9 second integration period.
     %  - .CCTstationList : Table listing all the stations used in this LRU (This will be the same for all LRUs with the same X,Y coordinates).
     %  - .CCTvirtualChannelOffset : The virtual channel offset is the first virtual channel sent to this FPGA. This is defined by the Z coordinate.
     
-    % First, get .stationList, the stations that are routed to this coarseCornerTurn module.
+    % First, get stationList, the stations that are routed to this coarseCornerTurn module.
     stationList = [];
     for LRU2 = 1:modelConfig.LRUs
         if (LRUreg(LRU2).zxy(2:3) == LRUreg(LRU).zxy(2:3))  % All LRUs on the same Z connect
@@ -349,29 +376,207 @@ for LRU = 1:modelConfig.LRUs
                 if (fullVirtualChannelTable(fullIndex,9) == 0) % Not invalid, i.e. valid.
                     logicalIDIndex = find(arrayConfigFull.subArray(fullVirtualChannelTable(fullIndex,7)).logicalIDs == fullVirtualChannelTable(fullIndex,8));
                     delayPoly = arrayConfigFull.stationBeam(fullVirtualChannelTable(fullIndex,6)).delayPolynomial(logicalIDIndex,:);  % The delay polynomial for this virtual channel 
+                    HVOffset = arrayConfigFull.stationBeam(fullVirtualChannelTable(fullIndex,6)).HVOffset(logicalIDIndex);
                 else
                     delayPoly = [0 0 0 0];  % Not a valid virtual channel, just set the polynomial to zeros.
+                    HVOffset = 0;
                 end
                 for frame = 1:modelConfig.runtime
                     currentTime = (frame - 1) * 1080e-9 * 2048 * 408;
-                    % Evaluate the delay polynomial 
+                    % Evaluate the delay polynomial and its derivative
                     delaySeconds = delayPoly(1) * currentTime^3 + delayPoly(2) * currentTime^2 + delayPoly(3) * currentTime + delayPoly(4);
+                    DdelayDt = 3 * delayPoly(1) * currentTime^2 + 2 * delayPoly(2) * currentTime + delayPoly(3);
                     delaySamples = round(delaySeconds/(1080e-9));
+                    delayFracH = delaySeconds - delaySamples * 1080e-9; % in seconds
+                    delayFracV = delayFracH + HVOffset;
+                    deltaPH = round((1/1080e-9) * (1/2) * delayFracH/(2^(-12)) * 2^3);  % See the coarse corner turn confluence page for an explanation.
+                    deltaPV = round((1/1080e-9) * (1/2) * delayFracV/(2^(-12)) * 2^3);
+                    deltadeltaP = round((1/1080e-9) * (1/2) * (DdelayDt * 64*1080e-9)/(2^(-15)) * 2^15);
                     if ((delaySamples < 0) || (delaySamples > 4095))
                         error(['Calculated Coarse Delay is ' num2str(delaySamples) ' LFAA samples. It must be between 0 and 4095']);
                     end
-                    LRUreg(LRU).CCTcoarseDelay((virtualChannelCount-1)*6 + (stationIndex-1) + 1,frame) = virtualChannel * (2^21) + stationID*(2^12) + delaySamples;
+                    % Two words in the table for each channel and station.
+                    LRUreg(LRU).CCTdelayTable(2*((virtualChannelCount-1)*6 + (stationIndex-1)) + 1,frame) = 2^16 * deltaPH + delaySamples;
+                    LRUreg(LRU).CCTdelayTable(2*((virtualChannelCount-1)*6 + (stationIndex-1)) + 2,frame) = 2^16 * deltadeltaP + deltaPV;
                 end
             end
         end
     end
     
-    keyboard
+end
+
+%% Registers for the filterbanks.
+% The filter taps for the filterbanks are fixed for all FPGAs, so they are stored in globalreg instead of LRUreg.
+% generate_MaxFlt creates filters with a DC response of 0.5
+% i.e. sum(globalreg.PSSFilterbankTaps(X:64:end)) = 0.5
+% The maximum value for the filter taps is about 0.55
+% The firmware has 18 bits to represent the filter taps (i.e. range = -131072 to 131071).
+% So scale by 2^17 (=131072)
+globalreg.PSSFilterbankTaps = round(2^17 * generate_MaxFlt(64,12));   % PSS, 64 point FFT, 12 taps.
+globalreg.PSTFilterbankTaps = round(2^17 * generate_MaxFlt(256,12));  % PST, 256 point FFT, 12 taps
+globalreg.correlatorFilterbankTaps = round(2^17 * generate_MaxFlt(4096,12)); % Correlator, 4096 point FFT, 12 taps.
+
+%% Registers for PSS beamforming
+% Each PSS beam has a set of complex weights for the stations involved.
+% up to 512 stations contribute to each beam. 
+% For each beam we need a complex weight for each station and each fine channel.
+% So the maximum is (500 beams) * (512 stations) * (54*384 fine channels) * (2bytes/weight (at least)) / (288 LRUs) = 36 Mbytes of weights per FPGA
+% Obviously that won't work.
+% Instead, we have a phase slope across the entire (300MHz) band - same data needs to be stored for all LRUs, so
+% (500 beams) * (512 stations) * (4 bytes/weight at least - 2 for slope + 2 for linear change in slope) = 1 Mbyte = 32 URAMs.
+%  Data required for each station and beam :
+%   * Phase slope
+%   * Linear change in the phase slope
+%   * valid - i.e. If this station contributes to this beam or not.
+% We also need to specify which stations and coarse channels contribute to each beam - do this with a bit vector for each beam and each LRU
+% For AA4, each LRU has 72 fine channels from all 512 stations (9 fine channels from each of 8 coarse channels).
+%
+% Registers (Same for all LRUs)
+%  globalreg.PSSPhase : array 512x500xT (station x beam x updates), with phase across a single 14.49kHz channel, in units of 2^(-25) rotations. Signed 24 bit value.
+%  globalreg.PSSPhaseDelta : array 512x500xT (station x beam x updates), with the phase change delta per 64 LFAA samples, in units of 2^(-42) rotations. Signed 24 bit value.
+%  globalreg.PSSUsed : array 512x500 (station x beam), indicates if the station is used for the beam.
+globalreg.PSSPhase = zeros(512,500,modelConfig.runtime,'int32');
+globalreg.PSSPhaseDelta = zeros(512,500,modelConfig.runtime,'int32');
+globalreg.PSSUsed = zeros(512,500,'int32');
+% Get a list of stations (indexed by stationIDs, not logicalIDs)
+stationList = unique(arrayConfigFull.stationsFull.stationIDs);
+for stationIndex = 1:length(stationList)
+    stationID = stationList(stationIndex);
+    
+    % Step through the PSS beams
+    NBeams = length(arrayConfigFull.PSSBeam);
+    for beam = 1:NBeams
+        % -------------
+        % Work out if this beam uses this stationID, and if so, which polynomial it is.
+        % Get the list of logical IDs for the stations in the subarray for this beam.
+        logicalIDs = arrayConfigFull.subArray(arrayConfigFull.PSSBeam(beam).subArray).logicalIDs;
+        % Check if any of these logicalIDs match this stationID
+        matchesFound = 0;
+        for i1 = 1:length(logicalIDs)
+            if (stationID == arrayConfigFull.stationsFull.stationIDs(find(arrayConfigFull.stationsFull.logicalIDs == logicalIDs(i1))))
+                matchesFound = matchesFound + 1;
+                matchIndex = i1;
+            end
+        end
+        if (matchesFound > 1)
+            error('More than one matching logical ID for the station ID in PSS beamforming');
+        end
+        % -------------
+        if (matchesFound == 1)
+            % Get the Polynomial
+            delayPoly = arrayConfigFull.PSSBeam(beam).delayPolynomial(matchIndex,:);
+            % Evaluate the polynomial and its derivative at the PSS update interval
+            % The PSS update interval is currently set here to once per 0.9 second frame - in the real system this is more likely to be about once per 10 seconds.
+            for frame = 1:modelConfig.runtime
+                currentTime = (frame - 1) * 1080e-9 * 2048 * 408;
+                delaySeconds = delayPoly(1) * currentTime^3 + delayPoly(2) * currentTime^2 + delayPoly(3) * currentTime + delayPoly(4);
+                DdelayDt = 3 * delayPoly(1) * currentTime^2 + 2 * delayPoly(2) * currentTime + delayPoly(3);
+                phaseRegister = ((1/1080e-9)/64) * delaySeconds / (2^(-25));   % Phase across one PSS fine channel, in units of 2^(-25) rotations.
+                deltaPhaseRegister = ((1/1080e-9)/64) * DdelayDt * 64 * 1080e-9 / (2^(-42)); % phase step, units of 2^(-42) rotations per 64 LFAA samples.
+                % Check values are reasonable
+                if ((abs(phaseRegister) > 2^23) || (abs(deltaPhaseRegister) > 2^23))
+                    warning('PSS phase corrections do not fit in 3 bytes');
+                end
+                globalreg.PSSPhase(stationID,beam,frame) = round(phaseRegister);
+                globalreg.PSSPhaseDelta(stationID,beam,frame) = round(deltaPhaseRegister);
+                globalreg.PSSUsed(stationID,beam) = 1;
+                % Check the error in the linear approximation from the first to the last frame
+                if (frame > 1)
+                    predictedPhase = double(globalreg.PSSPhase(stationID,beam,1)) + 2^(-17) * double(globalreg.PSSPhaseDelta(stationID,beam,1)) * (frame - 1) * 2048 * 408 / 64; 
+                    actualPhase = globalreg.PSSPhase(stationID,beam,frame);
+                    if ((predictedPhase - actualPhase) > 2)
+                        warning('Linear prediction for PSS phase is poor');
+                        keyboard
+                    end
+                end
+                %keyboard
+            end
+        else
+            % No match found, i.e. this station does not contribute to this beam.
+            globalreg.PSSPhase(stationID,beam,:) = 0;
+            globalreg.PSSPhaseDelta(stationID,beam,:) = 0;
+            globalreg.PSSUsed(stationID,beam) = 0;
+        end
+    end
     
 end
 
+%% ----------------------------------------------------------------------------------
+% Supporting functions
+%
+function W = generate_MaxFlt(nbuff, nTap)
+% Generate maximal flat filter coefficients
+% Adapted from John Buntons code.
 
- %% Registers for the filterbanks
+%{
+% Author: J Bunton, 22 August 2015
+Filter Response to meet correlator requirements
+For a monochromatic signal, total power (all channels) remains constant
+independent of frequency
+Starting point are the maximally flat filters
+this is improved with some simple optimisation
 
+Calculation should be done only once per Simulink simulation  
+
+nbuff = typically 4096
+nTaps = # of taps, typically 8 or 12 
+
+%} 
+
+%{ 
+SVN keywords
+ $Rev::                                                                                            $: Revision of last commit
+ $Author::                                                                                         $: Author of last commit
+ $Date::                                                                                           $: Date of last commit
+ $LastChangedDate::                                                                                $: Date of last change
+ $HeadURL: svn://codehostingbt.aut.ac.nz/svn/LOWCBF/Modelling/CSP_DSP/CSP_Dataflow/generate_MaxFl#$: Repo location
+%}
+
+
+%% Filter design coefficients 
+% disp('generate_MaxFlt')
+
+nTap2 = 2*nTap;  % say around 8 or 12 
+nTap2p1 = nTap2+1; 
+
+imp=maxflat(nTap2,'sym',.5*nTap2/nTap2p1);
+imp=interpft(imp,nTap2)*nTap2p1/nTap2; %Take to 2*ntap (24) tap filter (2 channel, 12tap FIR)
+
+% plot(db(fft(imp)),'o-')
+
+% Interate to improve (hard coded 10 times) 
+for k=1:10
+
+    impf=fft(imp);
+    imph=imp.*cos( ((1:length(imp))-1)*pi);
+    impfh=fft(imph);
+    errorf =(impf.*conj(impf)+impfh.*conj(impfh));
+    errorf=errorf/errorf(1);
+    errorf=1-errorf;
+    error=fftshift((ifft(errorf)));
+    imp=imp+error/2.0; %(2.5*( abs(impf)+abs(impfh) ));
+
+end
+
+cor=imp;
+corh=cor.*cos( ((1:length(imp))-1)*pi);
+
+corf=freqz(cor,2048)*2048;
+corfh=freqz(corh,2000)*2000;
+ampf=corf.*conj(corf)+corfh.*conj(corfh);
+error = fftshift((ifft(1-ampf)));
+
+
+%{
+Variable nbuff*nTap is the length of the filter. 
+Typically: 4096 freq channels * 8 taps) 
+
+12x32 is a 12 tap FIR section, 32 channel filterbank
+%} 
+%
+W=interpft(cor,nbuff*nTap);  %change this line to alter length of filter.
+W = W(:); % force column 
+
+return 
 
 

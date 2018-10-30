@@ -90,14 +90,3 @@ for f1 = 1:length(fpga)
 end
 
 
-
-
-
-
-
-
-
-
-
-
-

@@ -628,7 +628,9 @@ if (skyOutOfDate)
                                     else
                                         delayOAFPS(5) = 0;
                                     end
-                                    
+                                    % The vertical polarisation can have a different delay to account for different cable lengths in the receivers.
+                                    delayOAFPSV = delayOAFPS;
+                                    delayOAFPSV(1) = delayOAFPSV(1) + 1e9 * arrayConfigFull.stationsFull.polarisationOffsets(s2);
                                     % Get the data from the sky structure and resample it for this particular station.
                                     % channel - the LFAA channel this packet is supplying
                                     % sky(s1).LFAAChannels - list of coarse channels for this sky entry
@@ -640,14 +642,14 @@ if (skyOutOfDate)
                                         tic
                                         % oddly, double precision is faster than single precision. Unclear why.
                                         hpol = hpol + sqrt(sky(s1).power) * resampleNUfast(double(sky(s1).rawData(:,2*(thisData-1) + 1)),1080,channelFrequency,delayOAFPS,resampledPoints);
-                                        vpol = vpol + sqrt(sky(s1).power) * resampleNUfast(double(sky(s1).rawData(:,2*(thisData-1) + 2)),1080,channelFrequency,delayOAFPS,resampledPoints);
+                                        vpol = vpol + sqrt(sky(s1).power) * resampleNUfast(double(sky(s1).rawData(:,2*(thisData-1) + 2)),1080,channelFrequency,delayOAFPSV,resampledPoints);
                                         skyIsNull = 0;
                                         toc
                                     end 
                                 end
                             end
                             % Put the data in hpol and vpol into fpga(fpgaIndex).data(:,usedChannelCount)
-                            % Note that the hpol and vpol samples alternate just as in the LFAA packet format.
+                            % Note that the vpol and hpol samples alternate just as in the LFAA packet format.
                             % Note for fpga().dataPointers : 
                             %  .dataPointers = offset into .data field to take the data part of the packet from. Dimensions Mx2.
                             %                  At each row, first entry is the row offset, second entry is the column offset.
@@ -678,8 +680,8 @@ if (skyOutOfDate)
                                 % put in the calculated data.
                                 usedChannelCount = usedChannelCount + 1;
                                 
-                                fpga(fpgaIndex).data(1:2:end,usedChannelCount) = complex(hpolReal,hpolImag);  % resampledPoints*2,
-                                fpga(fpgaIndex).data(2:2:end,usedChannelCount) = complex(vpolReal,vpolImag);
+                                fpga(fpgaIndex).data(1:2:end,usedChannelCount) = complex(vpolReal,vpolImag);  % resampledPoints*2,
+                                fpga(fpgaIndex).data(2:2:end,usedChannelCount) = complex(hpolReal,hpolImag);
                                 fpga(fpgaIndex).dataPointers(channelCount,1) = 1;   % This is for the first header, so start at the start of the data.
                                 fpga(fpgaIndex).dataPointers(channelCount,2) = usedChannelCount;
                             end
@@ -786,10 +788,14 @@ end
 % Generate the register settings in the firmware from the LMC configuration
 if (regOutOfDate)
     disp('Generating register settings as they are out of date.')
-    FWRegisters = getRegisterSettings(arrayConfigFull,modelConfig);
-    regdata = jsonencode(FWRegisters);
+    [LRUreg, globalreg] = getRegisterSettings(arrayConfigFull,modelConfig);
+    reg.LRU = LRUreg;
+    reg.global = globalreg;
+    regdata = jsonencode(reg);
     fid = fopen([rundir '/registerSettings.txt'],'w');
     fprintf(fid,regdata);
     fclose(fid);
+else
+    disp('Register settings in registerSettings.txt are already up to date.');
 end
 
