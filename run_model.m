@@ -29,9 +29,10 @@ function run_model(rundir)
     %           * Coarse corner turn
     %           * filterbanks
     %           * fine delays
+    %           * RFI
     %        save results to stage2.mat
     %
-    % 3. stage3 Processing:
+    % 3. Stage3 Processing:
     %     For each FPGA
     %        Take input data from stage2
     %        Processing:
@@ -202,32 +203,45 @@ function run_model(rundir)
     % Stage2 Processing 
     %  - coarse corner turn, filterbanks, fine delay
     for lru = 1:modelConfig.LRUs
+        
         % Get the combinations of virtual channels and stations that this LRU processes
         [cz,cx,cy] = getLRUCoordinates(modelConfig.configuration,lru); % coordinates of this LRU in the array
         if (modelConfig.configuration == 0) % PISA, 3x1, all 6 stations in each LRU
             virtualChannels = ((cz-1):3:383);
             stations = modelConfig.stationMap;
+            CCTstationsPerLRU = 6;  % Number of stations per LRU for the coarse corner turn. This is used for addressing and indexing. Not all stations have to be used (i.e. there may be no data from some stations).
             zStart = 1;  % index of the first LRU with the same z coordinate as this LRU
+            corSplit = 1;  % number of ways each coarse channel is split at the output of the correlator.
         elseif (modelConfig.configuration == 1) % AA1, 2x6x1, 4 stations/LRU
             virtualChannels = ((cz-1):2:383);
             stations = modelConfig.stationMap((floor((lru-1)/2) * 4 + 1):(floor((lru-1)/2) * 4 + 4));
+            CCTstationsPerLRU = 4;
             zStart = floor((lru-1)/2) * 2 + 1;
+            corSplit = 6;
         elseif (modelConfig.configuration == 2) % AA2, 2x6x3, 4 stations/LRU
             virtualChannels = ((cz-1):2:383);
             stations = modelConfig.stationMap((floor((lru-1)/2) * 4 + 1):(floor((lru-1)/2) * 4 + 4));
+            CCTstationsPerLRU = 4;
             zStart = floor((lru-1)/2) * 2 + 1;
+            corSplit = 18;
         elseif (modelConfig.configuration == 3) % AA3-ITF, 4x6x2, 8 stations/LRU
             virtualChannels = ((cz-1):4:383);
             stations = modelConfig.stationMap((floor((lru-1)/4) * 8 + 1):(floor((lru-1)/4) * 8 + 8));
+            CCTstationsPerLRU = 8;
             zStart = floor((lru-1)/4) * 4 + 1;
+            corSplit = 12;
         elseif (modelConfig.configuration == 4) % AA3-CPF, 8x6x3, 16 stations/LRU
             virtualChannels = ((cz-1):8:383);
             stations = modelConfig.stationMap((floor((lru-1)/8) * 16 + 1):(floor((lru-1)/8) * 16 + 16));
+            CCTstationsPerLRU = 16;
             zStart = floor((lru-1)/8) * 8 + 1;
+            corSplit = 18;
         else % AA4, 8x6x6, 16 stations/LRU
             virtualChannels = ((cz-1):8:383);
             stations = modelConfig.stationMap((floor((lru-1)/8) * 16 + 1):(floor((lru-1)/8) * 16 + 16));
+            CCTstationsPerLRU = 16;
             zStart = floor((lru-1)/8) * 8 + 1;
+            corSplit = 36;
         end
 
         % Coarse corner turn inputs and outputs - just collect the appropriate packets and save to a data structure.
@@ -235,35 +249,152 @@ function run_model(rundir)
             % TBD 
         end
 
-        %keyboard
-        % Correlator filterbank
+        % The stage2 output data structure for the correlator only contains data for non-zero packets.
+        % (unlike the stage1 structure which contains headers for all packets - stage2 
+        %  outputs can be much smaller packets and so would use a lot of memory).
+        % Find the number of active stations & channels
+        totalStationsChannels = 0;
+        for channelCount = 1:length(virtualChannels)
+            channel = virtualChannels(channelCount);
+            for stationCount = 1:length(stations)
+                station = stations(stationCount);
+                packetIndex = find((channel == stage1(srcLRU).headers(1,:)) & (station == stage1(srcLRU).headers(3,:)),1);  % First packet for this station and channel. Note that all packets for this station+channel should reference the same data stream.
+                if (stage1(srcLRU).dataPointers(packetIndex,2) ~= 0)
+                    totalStationsChannels = totalStationsChannels + 1;
+                end
+            end
+        end
+        stage2Cor(lru).headers = zeros(4,corSplit * totalStationsChannels * modelConfig.runtime * 204);
+        stage2Cor(lru).data = zeros(2*3456/corSplit,corSplit * totalStationsChannels * modelConfig.runtime * 204);
+        corPacketCount = 0; % incremented as packets are put into the stage2Cor structure
+        
+        % Filterbanks
         % Step through the channels and stations that this LRU processes
-        for stationCount = 1:length(stations)
-            station = stations(stationCount);
-            for channelCount = 1:length(virtualChannels)
-                channel = virtualChannels(channelCount);
+        for channelCount = 1:length(virtualChannels)
+            channel = virtualChannels(channelCount);
+            for stationCount = 1:length(stations)
+                station = stations(stationCount);
+                CCToffset = (channelCount-1) * CCTstationsPerLRU + (stationCount-1) + 1;
                 % Work out which LRU this combination of station and channel comes from.
+                % Note that the order we step through stations & channels here is also the order in which they are stored in the coarse corner turn buffer,
+                % and the order in which the delay information is stored in the registers (i.e. in registers.LRU(lru).CCTdelayTable())
                 % Z coordinate is just stationCount/2, since "stations" is a list of all the stations in that go to this z coordinate (and 2 stations/LRU).
                 srcLRU = floor((stationCount-1)/2) + (zStart-1) + 1;
-                packetIndex = find(channel == stage1(srcLRU).headers(1,:),1);  % First packet for this station and channel
+                packetIndex = find((channel == stage1(srcLRU).headers(1,:)) & (station == stage1(srcLRU).headers(3,:)),1);  % First packet for this station and channel. Note that all packets for this station+channel should reference the same data stream.
                 if (stage1(srcLRU).dataPointers(packetIndex,2) ~= 0)
                     % Data exists for this channel
                     % Process it in 0.9 second frames, taking into account the coarse delay, and using zeros for initialisation data for the first frame.
                     % data is stage1(srcLRU).data(:,stage1(srcLRU).dataPointers(packetIndex,2))
+                    % Coarse delay is in the low 16 bits of registers.LRU(lru).CCTdelayTable((CCToffset-1)*2 + 1)
+                    keyboard
+                    for frame = 1:modelConfig.runtime
+                        coarseDelay = mod(registers.LRU(lru).CCTdelayTable((CCToffset-1)*2 + 1,frame),65536);
+                        hPolDeltaPCoarse = floor(registers.LRU(lru).CCTdelayTable((CCToffset-1)*2 + 1,frame)/65536);
+                        vPolDeltaPCoarse = mod(registers.LRU(lru).CCTdelayTable((CCToffset-1)*2 + 2,frame),65536);
+                        deltaDeltaPCoarse = floor(registers.LRU(lru).CCTdelayTable((CCToffset-1)*2 + 2,frame)/65536);
+                        % Correlator filterbank. Data per frame is 204 * 4096 samples, plus 11 * 4096 samples for the initialisation data.
+                        if (frame == 1) % first frame, initialization for the filterbank is zeros.
+                            vPolData = zeros((204+12)*4096,1);
+                            hPolData = zeros((204+12)*4096,1);
+                            vPolData((12*4096+1):end) = stage1(srcLRU).data(1:2:(2*204*4096),stage1(srcLRU).dataPointers(packetIndex,2));
+                            hPolData((12*4096+1):end) = stage1(srcLRU).data(2:2:(2*204*4096),stage1(srcLRU).dataPointers(packetIndex,2));
+                        else  % Part way through the frame, so we have initialisation data.
+                            sampleStart = (frame-1) * 4096 * 204 * 2 - 12 * 4096 * 2;   % x2 because polarisations are interleaved.
+                            vPolData = stage1(srcLRU).data((sampleStart+1):2:(sampleStart + 2*(204+12)*4096),stage1(srcLRU).dataPointers(packetIndex,2));
+                            hPolData = stage1(srcLRU).data((sampleStart+2):2:(sampleStart + 2*(204+12)*4096),stage1(srcLRU).dataPointers(packetIndex,2));
+                        end
+                        vPolCorrelatorFB = filterbank(vPolData((coarseDelay+1):(coarseDelay+215*4096)),registers.global.correlatorFilterbankTaps,4096,1,3456);
+                        hPolCorrelatorFB = filterbank(hPolData((coarseDelay+1):(coarseDelay+215*4096)),registers.global.correlatorFilterbankTaps,4096,1,3456);
+                        % Fine time delay.
+                        % The fine delay in vPolDeltaPCoarse is the fine delay at the start of the frame.
+                        % We need to adjust it by deltaDeltaPCoarse to the group of 64 samples closest to the peak of the filter.
+                        filterpeakStart = -12 * 4096 + coarseDelay + registers.global.correlatorFilterbankMaxIndex;
+                        vPolCorrelatorFD = zeros(3456,204);
+                        hPolCorrelatorFD = zeros(3456,204);
+                        for block = 1:204
+                            filterpeak = round((filterpeakStart + (block - 1)*4096)/64); % Number of 64 sample steps to where the filter peak is.
+                            vPolDeltaPCoarseFinal = vPolDeltaPCoarse + filterpeak * deltaDeltaPCoarse * 2^(-15);
+                            hPolDeltaPCoarseFinal = hPolDeltaPCoarse + filterpeak * deltaDeltaPCoarse * 2^(-15);
+                            vPolPhaseCorrection = exp(1i * 2^(-15) * 2 * pi * ((-1728:1727).') * vPolDeltaPCoarseFinal/2048);
+                            hPolPhaseCorrection = exp(1i * 2^(-15) * 2 * pi * ((-1728:1727).') * hPolDeltaPCoarseFinal/2048);
+                            vPolCorrelatorFD(:,block) = vPolCorrelatorFB(:,block) .* vPolPhaseCorrection;
+                            hPolCorrelatorFD(:,block) = hPolCorrelatorFB(:,block) .* hPolPhaseCorrection;
+                        end
+                        
+                        keyboard
+                        corSplitSize = 3456/corSplit;
+                        for block = 1:204
+                            for split = 1:corSplit
+                                corPacketCount = corPacketCount + 1;
+                                
+%                                 stage2Cor(lru).headers(1,corPacketCount) = ;   % virtual channel (9 bits)
+%                                 stage2Cor(lru).headers(2,corPacketCount) = ;   % true frequency (9 bits)
+%                                 stage2Cor(lru).headers(3,corPacketCount) = ;   % station id (9 bits)
+%                                 stage2Cor(lru).headers(4,corPacketCount) = ;   % The LFAA packet count that this came from, divided by 2 (31 bits). (Divide by 2 since there are 4096 samples per filterbank output, but 2048 samples per LFAA input packet).
+%                                 stage2Cor(lru).headers(5,corPacketCount) = ;   % First fine channel in the packet. Actual fine channel is this value * 96. (6 bits required)
+%                                 
+%                                 
+%                                 stage1(lru).headers(1,packet) = virtualChannel;
+%             stage1(lru).headers(2,packet) = frequency_id;
+%             stage1(lru).headers(3,packet) = station_id;
+%             stage1(lru).headers(4,packet) = packet_count;
+                                
+                                stage2Cor(lru).data(1:2:end,corPacketCount) = vPolCorrelatorFD((((split-1)*corSplitSize+1):((split-1)*corSplitSize + corSplitSize)),block);
+                                stage2Cor(lru).data(2:2:end,corPacketCount) = hPolCorrelatorFD((((split-1)*corSplitSize+1):((split-1)*corSplitSize + corSplitSize)),block);
+                            end
+                        end
+                        % PSS and PST operate on the same data, just need to trim the initialisation portion to the right length
+                        %  -- TBD --
+                        
+                        
+                        
+                    end  % end of loop through all frames
                 end
-                keyboard
-            end
-        end
+                %keyboard
+            end  % end of loop through stations.
+        end % end of loop through channels.
 
     end
 
     %% -----------------------------------------------------------------------
     % Stage3 Processing
-
+    %  Fine corner turn, correlators and beamformers.
+    
+    
+    %% -----------------------------------------------------------------------
+    % Stage4 Processing
+    %  * PSS corner turn
+    %  * Packetising for SDP, PSS and PST    
 
 end
 %% ----------------------------------------------------------------------- 
 % Supporting Functions
+
+function [dout] = filterbank(din,filterTaps,FFTsize,oversampling,keep)
+    % Polyphase filterbank.
+    % Inputs:
+    %   din : input data, assumes that the leading data is initialisation data for the filterbank.
+    %   filterTaps : polyphase filter taps.
+    %   fftSize : length of the FFT.
+    %   oversampling : oversampling ratio for the output.
+    %   keep : number of frequency channels to keep (e.g. 3456 out of a 4096 point FFT).
+    % dout : output data. Length will be different to din as the outputs from the initialisation data are discarded.
+    inputSamples = length(din);
+    totalTaps = length(filterTaps);
+    blocksPerOutput = totalTaps/FFTsize; % Number of blocks of input samples per output sample (expected to be 12)
+    outputFFTs = oversampling * (inputSamples/FFTsize - (blocksPerOutput - 1)); % Number of times the FFT is done
+    sampleStep = round(FFTsize / oversampling);
+    dout = zeros(keep,outputFFTs);
+    for f1 = 1:outputFFTs
+        filtered1 = din(((f1-1)*sampleStep + 1):((f1-1)*sampleStep + blocksPerOutput*FFTsize)) .* filterTaps;
+        filtered2 = reshape(filtered1,[FFTsize,blocksPerOutput]).';
+        filtered3 = sum(filtered2);
+        fd = fftshift(fft(filtered3));
+        dout(:,f1) = fd((FFTsize/2 - keep/2):(FFTsize/2 + keep/2 - 1)).';  % With the -1 added to the second limit, this keeps one more negative frequency than positive frequency (as suggested by JohnB).
+    end
+    
+end
+
 
 function [z,x,y] = getLRUCoordinates(configuration,lru)
     % Get the coordinates of the LRU in the array (convert linear order to z,x,y)

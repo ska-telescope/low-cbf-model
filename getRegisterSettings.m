@@ -72,10 +72,9 @@ else
     totalRuntime = modelConfig.runtime * 1080e-9 * 408 * 2048; 
     updates = floor(totalRuntime / modelConfig.delayUpdatePeriod) + 1;
 end
-defaultReg.LDcountOffset0 = zeros(1,updates);
-defaultReg.LDcountOffset1 = zeros(1,updates);
-defaultReg.LDstartPhase = zeros(1536,updates);
-defaultReg.LDphaseStep = zeros(1536,updates);
+defaultReg.LDcountOffset = zeros(768,updates);  % 384 entries for station 0, 384 entries for station 1.
+defaultReg.LDstartPhase = zeros(1536,updates);  % 4 blocks of 384 entries; Vpol station 0, Hpol station 0, Vpol station 1, Hpol station 1.
+defaultReg.LDphaseStep = zeros(1536,updates);   % 4 blocks of 384 entries; Vpol station 0, Hpol station 0, Vpol station 1, Hpol station 1.
 defaultReg.LDvalidFrom = zeros(1,updates);
 % CCT : Registers for Coarse Corner Turn module
 defaultReg.CCTdelayTable = zeros(768,modelConfig.runtime,'int32');
@@ -224,8 +223,7 @@ for LRU = 1:modelConfig.LRUs
     %% Registers for LocalDoppler module (LD)
     % .LDStationID0
     % .LDStationID1
-    % .LDcountOffset0
-    % .LDcountOffset1
+    % .LDcountOffset - 768 values for each update = 384 for stationID0 and 384 for stationID1
     % .LDstartPhase
     % .LDphaseStep
     % .LDvalidFrom     
@@ -274,9 +272,7 @@ for LRU = 1:modelConfig.LRUs
                 skyPeriod = 1/skyFrequency;
                 
                 if (virtualChannelTable(virtualChannel,9) == 0) % Not invalid, i.e. valid.
-                    LRUreg(LRU).LDcountOffset0(1,update) = round(currentTimeRounded / (2048 * 1080e-9));
-                    LRUreg(LRU).LDcountOffset1(1,update) = round(currentTimeRounded / (2048 * 1080e-9));
-                    
+                    LRUreg(LRU).LDcountOffset(station*384 + virtualChannel,update) = round(currentTimeRounded / (2048 * 1080e-9));
                     % Note (DdelayDt / skyPeriod) = Doppler revolutions per second.
                     % First 384 = horizontal polarisation
                     LRUreg(LRU).LDstartPhase(station*768 + virtualChannel,update) = round(2^32 * rem(initialDelay,skyPeriod)/skyPeriod);
@@ -285,8 +281,7 @@ for LRU = 1:modelConfig.LRUs
                     LRUreg(LRU).LDstartPhase(station*768 + 384 + virtualChannel,update) = round(2^32 * rem(initialDelay + HVOffset,skyPeriod)/skyPeriod);
                     LRUreg(LRU).LDphaseStep(station*768 + 384 + virtualChannel,update) = round((2^35)*(1080e-9)*(DdelayDt / skyPeriod));
                 else % This virtual channel is not used.
-                    LRUreg(LRU).LDcountOffset0(1,update) = 0;
-                    LRUreg(LRU).LDcountOffset1(1,update) = 0;
+                    LRUreg(LRU).LDcountOffset(station*384 + virtualChannel,update) = 0;
                     LRUreg(LRU).LDstartPhase(station*768 + virtualChannel,update) = 0;
                     LRUreg(LRU).LDphaseStep(station*768 + virtualChannel,update) = 0;
                     LRUreg(LRU).LDstartPhase(station*768 + 384 + virtualChannel,update) = 0;
@@ -300,7 +295,7 @@ for LRU = 1:modelConfig.LRUs
             % Check the maximum size of the phase discontinuity at the update boundaries
             if (updates > 1)
                 for update = 2:updates
-                    predictedPhase = (2^(-32)) * LRUreg(LRU).LDstartPhase(station*768 + virtualChannel,update-1) + (2^(-35)) * 2048 * LRUreg(LRU).LDphaseStep(station*768 + virtualChannel,update) * (LRUreg(LRU).LDcountOffset0(1,update) - LRUreg(LRU).LDcountOffset0(1,update-1));
+                    predictedPhase = (2^(-32)) * LRUreg(LRU).LDstartPhase(station*768 + virtualChannel,update-1) + (2^(-35)) * 2048 * LRUreg(LRU).LDphaseStep(station*768 + virtualChannel,update) * (LRUreg(LRU).LDcountOffset(station*384+virtualChannel,update) - LRUreg(LRU).LDcountOffset(station*384+virtualChannel,update-1));
                     actualPhase = (2^(-32)) * LRUreg(LRU).LDstartPhase(station*768 + virtualChannel,update);
                     phaseError = predictedPhase - actualPhase - round(predictedPhase - actualPhase); % It is possible to be out by whole rotations due to dropping whole rotations from the 32 bit representation in the LDstartPhase register.
                     if (phaseError > 0.001)
@@ -416,6 +411,20 @@ globalreg.PSSFilterbankTaps = round(2^17 * generate_MaxFlt(64,12));   % PSS, 64 
 globalreg.PSTFilterbankTaps = round(2^17 * generate_MaxFlt(256,12));  % PST, 256 point FFT, 12 taps
 globalreg.correlatorFilterbankTaps = round(2^17 * generate_MaxFlt(4096,12)); % Correlator, 4096 point FFT, 12 taps.
 
+% Also find the location of the maximum of the filters, which is used for setting the fine delay (since fine delay changes with time).
+mv = max(globalreg.correlatorFilterbankTaps);
+mi = find(globalreg.correlatorFilterbankTaps == mv);
+globalreg.correlatorFilterbankMaxIndex = median(mi);
+
+mv = max(globalreg.PSSFilterbankTaps);
+mi = find(globalreg.PSSFilterbankTaps == mv);
+globalreg.PSSFilterbankMaxIndex = median(mi);
+
+mv = max(globalreg.PSTFilterbankTaps);
+mi = find(globalreg.PSTFilterbankTaps == mv);
+globalreg.PSTFilterbankMaxIndex = median(mi);
+
+
 %% Registers for PSS beamforming
 % Each PSS beam has a set of complex weights for the stations involved.
 % up to 512 stations contribute to each beam. 
@@ -444,7 +453,12 @@ for stationIndex = 1:length(stationList)
     stationID = stationList(stationIndex);
     
     % Step through the PSS beams
-    NBeams = length(arrayConfigFull.PSSBeam);
+    if isfield(arrayConfigFull,'PSSBeam')
+        NBeams = length(arrayConfigFull.PSSBeam);
+    else
+        NBeams = 0;
+        disp('No PSS beams defined; skipping register generation for PSS beams');
+    end
     for beam = 1:NBeams
         % -------------
         % Work out if this beam uses this stationID, and if so, which polynomial it is.

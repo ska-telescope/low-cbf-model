@@ -3,12 +3,12 @@ function create_config(rundir)
 % Configuration is stored in directory rundir
 %
 %% The setup that is generated consists of the following files:
-% - "lmc_config.txt"
+% - "lmcConfig.txt"
 %    This is in JSON format.
 %    It describes the setup for LOW.CBF according to the parameters specified
 %    in the LMC (local monitoring and control) interface specification.
 %
-% - "register_settings.txt"
+% - "registerSettings.txt"
 %    Register settings used in the model. For example the 4th order delay 
 %    polynomials in lmc_config.txt are converted to a linear interpolation
 %    for use in the firmware.
@@ -729,7 +729,9 @@ if (skyOutOfDate)
             fpga(fpgaIndex).headers(82,hdrCount) = mod(curTimeStamp,256);
             % Put in the link to the data
             fpga(fpgaIndex).dataPointers(hdrCount,:) = fpga(fpgaIndex).dataPointers(hdrCount - totalChannels,:);
-            fpga(fpgaIndex).dataPointers(hdrCount,1) = fpga(fpgaIndex).dataPointers(hdrCount,1) + 4096;  % 2048 samples per packet, data is interleaved between two polarisations, so plus 4096.
+            % 2048 samples per packet, data is interleaved between two polarisations, so plus 4096. 
+            % Note the data is complex so the number of bytes per packet is double this (=8192)
+            fpga(fpgaIndex).dataPointers(hdrCount,1) = fpga(fpgaIndex).dataPointers(hdrCount,1) + 4096;  
         end
         
         % Generate the transmit time for each header
@@ -788,6 +790,7 @@ end
 % Generate the register settings in the firmware from the LMC configuration
 if (regOutOfDate)
     disp('Generating register settings as they are out of date.')
+    %keyboard
     [LRUreg, globalreg] = getRegisterSettings(arrayConfigFull,modelConfig);
     reg.LRU = LRUreg;
     reg.global = globalreg;

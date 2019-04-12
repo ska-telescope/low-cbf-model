@@ -33,7 +33,7 @@ for f1 = 1:length(fpga)
    bytesPerChannel = 2*s1(1);
    thisChannel = zeros(bytesPerChannel,1);
    for b1 = 1:s1(2)
-       thisChannel(1:2:end) = real(fpga(f1).data(:,b1));
+       thisChannel(1:2:end) = real(fpga(f1).data(:,b1));  % Note fpga(XX).data is complex int8 data.
        thisChannel(2:2:end) = imag(fpga(f1).data(:,b1));
        fwrite(fid,thisChannel,'int8');
    end
