@@ -74,6 +74,15 @@ function write_tb_data(rundir,LRUSelect, maxPackets, maxGap)
         fprintf(vcfid,[dec2hex(registers.LRU(LRUSelect).virtualChannel(n1),8) '\n']);
     end
     fclose(vcfid);
+    % another version of LFAADecode_VCTable.txt, LFAADecode_VCTableFW.txt, which has 0x prefix and memory name included
+    % (used by gemini viewer for uploading to the firmware)
+    vcfid = fopen([rundir '/tb/LFAADecode_VCTableFW.txt'],'wt');
+    fprintf(vcfid,'[lfaadecode.statctrl.vctable]\n');
+    for n1 = 1:1024
+        fprintf(vcfid,['0x' dec2hex(registers.LRU(LRUSelect).virtualChannel(n1),8) '\n']);
+    end
+    fclose(vcfid);    
+    
     
     rCount(1) = rCount(1) + 1;
     regWrites{1}(rCount(1)).name = 'LFAADecode_statctrl_VCTable';
