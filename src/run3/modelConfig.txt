@@ -1,0 +1,10 @@
+{
+   "SNR" : [101],
+   "time" : [0],
+   "runtime" : [2],
+   "configuration" : [0],
+   "runCorrelator" : [1],
+   "runPSS" : [1],
+   "runPST" : [1],
+   "delayUpdatePeriod" : [1]
+}
