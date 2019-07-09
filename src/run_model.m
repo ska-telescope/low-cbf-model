@@ -151,13 +151,13 @@ function run_model(rundir)
                 if ~channelDone(fpga(lru).dataPointers(packet,2))
                     % Do the Doppler correction for the entire channel
                     if (registers.LRU(lru).LDStationID0 == stage1(lru).headers(3,packet))
-                        countOffset = registers.LRU(lru).LDcountOffset0;
+                        %countOffset = registers.LRU(lru).LDcountOffset0;
                         startPhaseH = registers.LRU(lru).LDstartPhase(stage1(lru).headers(1,packet) + 1,:);
                         startPhaseV = registers.LRU(lru).LDstartPhase(stage1(lru).headers(1,packet) + 1 + 384,:);
                         phaseStepH = registers.LRU(lru).LDphaseStep(stage1(lru).headers(1,packet) + 1,:);
                         phaseStepV = registers.LRU(lru).LDphaseStep(stage1(lru).headers(1,packet) + 1 + 384,:);
                     elseif (registers.LRU(lru).LDStationID1 == stage1(lru).headers(3,packet))
-                        countOffset = registers.LRU(lru).LDcountOffset1;
+                        %countOffset = registers.LRU(lru).LDcountOffset1;
                         startPhaseH = registers.LRU(lru).LDstartPhase(stage1(lru).headers(1,packet) + 1 + 768,:);
                         startPhaseV = registers.LRU(lru).LDstartPhase(stage1(lru).headers(1,packet) + 1 + 1152,:);
                         phaseStepH = registers.LRU(lru).LDphaseStep(stage1(lru).headers(1,packet) + 1 + 768,:);
