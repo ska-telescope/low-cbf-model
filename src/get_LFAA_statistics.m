@@ -45,10 +45,10 @@ function [channelPower1Vpol,channelPower1Hpol, channelPower2Vpol, channelPower2H
     % Get the subset of samples that are used in the firmware for power measurements.
     PsamplesUsed = zeros(512,1);
     for k1 = 1:128
-        PsamplesUsed((k1-1)*4 + 1) = (k1-1)*4 + 1;
-        PsamplesUsed((k1-1)*4 + 2) = (k1-1)*4 + 6;
-        PsamplesUsed((k1-1)*4 + 3) = (k1-1)*4 + 11;
-        PsamplesUsed((k1-1)*4 + 4) = (k1-1)*4 + 16;
+        PsamplesUsed((k1-1)*4 + 1) = (k1-1)*16 + 1;
+        PsamplesUsed((k1-1)*4 + 2) = (k1-1)*16 + 6;
+        PsamplesUsed((k1-1)*4 + 3) = (k1-1)*16 + 11;
+        PsamplesUsed((k1-1)*4 + 4) = (k1-1)*16 + 16;
     end
     
     % Voltage histogram for a particular station and virtual channel
@@ -123,7 +123,7 @@ function [channelPower1Vpol,channelPower1Hpol, channelPower2Vpol, channelPower2H
                     
                     histogram(VreIndex) = histogram(VreIndex) + 1;
                     histogram(VimIndex + 256) = histogram(VimIndex + 256) + 1;
-                    histogram(HreIndex + 512) = histogram(HimIndex + 512) + 1;
+                    histogram(HreIndex + 512) = histogram(HreIndex + 512) + 1;
                     histogram(HimIndex + 768) = histogram(HimIndex + 768) + 1;
                     
                 end
@@ -151,6 +151,18 @@ function [channelPower1Vpol,channelPower1Hpol, channelPower2Vpol, channelPower2H
         end
         
     end
+    
+    figure(1);
+    clf;
+    hold on;
+    grid on;
+    hxvals = [-128:127];
+    plot(hxvals,fftshift(histogram(1:256)),'r.-');
+    plot(hxvals,fftshift(histogram(257:512)),'g.-');
+    plot(hxvals,fftshift(histogram(513:768)),'b.-');
+    plot(hxvals,fftshift(histogram(769:1024)),'c.-');
+    legend('Vpol real','Vpol Imag','Hpol real','Hpol imag');
+    title(['Histogram of raw samples, virtual channel = ' num2str(histogramVirtualChannel)])
     
     keyboard
     
