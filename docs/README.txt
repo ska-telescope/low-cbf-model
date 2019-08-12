@@ -1,2 +1,2 @@
 For documentation see:
-https://perentie.atlassian.net/wiki/spaces/MD/overview
+https://confluence.skatelescope.org/display/SE/Packetised+Model+Overview
