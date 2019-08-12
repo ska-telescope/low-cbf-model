@@ -269,9 +269,9 @@ for LRU = 1:modelConfig.LRUs
                 initialDelay = delayPoly(1) * currentTimeRounded^3 + delayPoly(2) * currentTimeRounded^2 + delayPoly(3) * currentTimeRounded + delayPoly(4);
                 DdelayDt = 3 * delayPoly(1) * currentTimeRounded^2 + 2 * delayPoly(2) * currentTimeRounded + delayPoly(3); % delay in seconds/second
                 skyFrequency = virtualChannelTable(virtualChannel,1) * 781.25e3;  % frequency in Hz
-                skyPeriod = 1/skyFrequency;
                 
                 if (virtualChannelTable(virtualChannel,9) == 0) % Not invalid, i.e. valid.
+                    skyPeriod = 1/skyFrequency;
                     LRUreg(LRU).LDcountOffset(station*384 + virtualChannel,update) = round(currentTimeRounded / (2048 * 1080e-9));
                     % Note (DdelayDt / skyPeriod) = Doppler revolutions per second.
                     % First 384 = horizontal polarisation
@@ -407,9 +407,15 @@ end
 % The maximum value for the filter taps is about 0.55
 % The firmware has 18 bits to represent the filter taps (i.e. range = -131072 to 131071).
 % So scale by 2^17 (=131072)
-globalreg.PSSFilterbankTaps = round(2^17 * generate_MaxFlt(64,12));   % PSS, 64 point FFT, 12 taps.
-globalreg.PSTFilterbankTaps = round(2^17 * generate_MaxFlt(256,12));  % PST, 256 point FFT, 12 taps
-globalreg.correlatorFilterbankTaps = round(2^17 * generate_MaxFlt(4096,12)); % Correlator, 4096 point FFT, 12 taps.
+%globalreg.PSSFilterbankTaps = round(2^17 * generate_MaxFlt(64,12));   % PSS, 64 point FFT, 12 taps.
+load('pss-filter.mat')
+globalreg.PSSFilterbankTaps = pss_filter;
+%globalreg.PSTFilterbankTaps = round(2^17 * generate_MaxFlt(256,12));  % PST, 256 point FFT, 12 taps
+load('pst-filter.mat')
+globalreg.PSTFilterbankTaps = pst_filter;;  % PST, 256 point FFT, 12 taps
+%globalreg.correlatorFilterbankTaps = round(2^17 * generate_MaxFlt(4096,12)); % Correlator, 4096 point FFT, 12 taps.
+load('correlator-filter.mat')
+globalreg.correlatorFilterbankTaps = correlator_filter; % Correlator, 4096 point FFT, 12 taps.
 
 % Also find the location of the maximum of the filters, which is used for setting the fine delay (since fine delay changes with time).
 mv = max(globalreg.correlatorFilterbankTaps);
@@ -514,83 +520,3 @@ for stationIndex = 1:length(stationList)
     end
     
 end
-
-%% ----------------------------------------------------------------------------------
-% Supporting functions
-%
-function W = generate_MaxFlt(nbuff, nTap)
-% Generate maximal flat filter coefficients
-% Adapted from John Buntons code.
-
-%{
-% Author: J Bunton, 22 August 2015
-Filter Response to meet correlator requirements
-For a monochromatic signal, total power (all channels) remains constant
-independent of frequency
-Starting point are the maximally flat filters
-this is improved with some simple optimisation
-
-Calculation should be done only once per Simulink simulation  
-
-nbuff = typically 4096
-nTaps = # of taps, typically 8 or 12 
-
-%} 
-
-%{ 
-SVN keywords
- $Rev::                                                                                            $: Revision of last commit
- $Author::                                                                                         $: Author of last commit
- $Date::                                                                                           $: Date of last commit
- $LastChangedDate::                                                                                $: Date of last change
- $HeadURL: svn://codehostingbt.aut.ac.nz/svn/LOWCBF/Modelling/CSP_DSP/CSP_Dataflow/generate_MaxFl#$: Repo location
-%}
-
-
-%% Filter design coefficients 
-% disp('generate_MaxFlt')
-
-nTap2 = 2*nTap;  % say around 8 or 12 
-nTap2p1 = nTap2+1; 
-
-imp=maxflat(nTap2,'sym',.5*nTap2/nTap2p1);
-imp=interpft(imp,nTap2)*nTap2p1/nTap2; %Take to 2*ntap (24) tap filter (2 channel, 12tap FIR)
-
-% plot(db(fft(imp)),'o-')
-
-% Interate to improve (hard coded 10 times) 
-for k=1:10
-
-    impf=fft(imp);
-    imph=imp.*cos( ((1:length(imp))-1)*pi);
-    impfh=fft(imph);
-    errorf =(impf.*conj(impf)+impfh.*conj(impfh));
-    errorf=errorf/errorf(1);
-    errorf=1-errorf;
-    error=fftshift((ifft(errorf)));
-    imp=imp+error/2.0; %(2.5*( abs(impf)+abs(impfh) ));
-
-end
-
-cor=imp;
-corh=cor.*cos( ((1:length(imp))-1)*pi);
-
-corf=freqz(cor,2048)*2048;
-corfh=freqz(corh,2000)*2000;
-ampf=corf.*conj(corf)+corfh.*conj(corfh);
-error = fftshift((ifft(1-ampf)));
-
-
-%{
-Variable nbuff*nTap is the length of the filter. 
-Typically: 4096 freq channels * 8 taps) 
-
-12x32 is a 12 tap FIR section, 32 channel filterbank
-%} 
-%
-W=interpft(cor,nbuff*nTap);  %change this line to alter length of filter.
-W = W(:); % force column 
-
-return 
-
-

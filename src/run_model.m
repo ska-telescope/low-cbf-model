@@ -54,25 +54,37 @@ function run_model(rundir)
     modelConfig = parseModelConfig(rundir);
 
     % Firmware register settings
-    fid = fopen([rundir '/registerSettings.txt']);
-    regjson = fread(fid,inf);
-    fclose(fid);
-    regjson = char(regjson');
-    registers = jsondecode(regjson);
+    if exist("OCTAVE_VERSION", "builtin") > 0
+        octave_reg = loadjson([rundir '/registerSettings.txt']);
+        for ii = 1:length(octave_reg.LRU)
+            registers.LRU(ii) = octave_reg.LRU{ii};
+        end
+        registers.global = octave_reg.global;
+    else
+        fid = fopen([rundir '/registerSettings.txt']);
+        regjson = fread(fid,inf);
+        fclose(fid);
+        regjson = char(regjson');
+        registers = jsondecode(regjson);
+    end
 
     % lmc Configuration
-    fid = fopen([rundir '/lmcConfig.txt']);
-    lmcjson = fread(fid,inf);
-    fclose(fid);
-    lmcjson = char(lmcjson');
-    arrayConfigFull = jsondecode(lmcjson);
+    if exist("OCTAVE_VERSION", "builtin") > 0
+        arrayConfigFull = loadjson([rundir '/lmcConfig.txt']);
+    else
+        fid = fopen([rundir '/lmcConfig.txt']);
+        lmcjson = fread(fid,inf);
+        fclose(fid);
+        lmcjson = char(lmcjson');
+        arrayConfigFull = jsondecode(lmcjson);
+    end
 
     %% -----------------------------------------------------------------------
     % Stage1 Processing - LFAA ingest and Local Doppler
 
     % Load the data file
     fname = [rundir '/LFAA'];
-    if exist(fullfile(cd,rundir,'LFAA.mat'),'file')
+    if exist(fullfile(pwd,rundir,'LFAA'),'file')
         load(fname);  % Should load a variable "fpga"
     else
         error(['Cannot find ' fname '. Run create_config.m to generate it']);
@@ -197,6 +209,7 @@ function run_model(rundir)
     save([rundir '/stage1'], 'stage1');
 
     % Gather packets from all LRUs that go to a particular destination
+    disp(' This script is still in development: Stopping for debug')
     keyboard
 
     %% -----------------------------------------------------------------------

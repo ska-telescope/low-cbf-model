@@ -15,9 +15,9 @@ function get_LFAA_raw(rundir)
 
 %% Load the data file
 
-fname = [rundir '/LFAA'];
+fname = [rundir '/LFAA.mat'];
 
-if exist(fullfile(cd,rundir,'LFAA.mat'),'file')
+if exist(fullfile(pwd,rundir,'LFAA.mat'),'file')
     load(fname)
 else
     error(['Cannot find ' fname '. Run create_config.m to generate it']);

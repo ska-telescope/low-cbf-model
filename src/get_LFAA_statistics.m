@@ -5,19 +5,27 @@ function [channelPower1Vpol,channelPower1Hpol, channelPower2Vpol, channelPower2H
     %  lru    : which LRU to calculate statistics for
     %  maxPackets : Total number of input packets to process
     %  histogramStation : which of the two stations to log the voltage histogram for (1 or 2)
-    %  histogramVirtualChannel : Which virtual channel to calculate the voltage histogram for.
+    %  histogramVirtualChannel : Which virtual channel to calculate the voltage histogram for (0-based).
 
     %% Load info for this run
     % Firmware register settings
-    fid = fopen([rundir '/registerSettings.txt']);
-    regjson = fread(fid,inf);
-    fclose(fid);
-    regjson = char(regjson');
-    registers = jsondecode(regjson);
+    if exist("OCTAVE_VERSION", "builtin") > 0
+        octave_reg = loadjson([rundir '/registerSettings.txt']);
+        for ii = 1:length(octave_reg.LRU)
+            registers.LRU(ii) = octave_reg.LRU{ii};
+        end
+        registers.global = octave_reg.global;
+    else
+        fid = fopen([rundir '/registerSettings.txt']);
+        regjson = fread(fid,inf);
+        fclose(fid);
+        regjson = char(regjson');
+        registers = jsondecode(regjson);
+    end
     
     % Load the data file
-    fname = [rundir '/LFAA'];
-    if exist(fullfile(cd,rundir,'LFAA.mat'),'file')
+    fname = [rundir '/LFAA.mat'];
+    if exist(fullfile(pwd,rundir,'LFAA.mat'),'file')
         load(fname);  % Should load a variable "fpga"
     else
         error(['Cannot find ' fname '. Run create_config.m to generate it']);
@@ -27,7 +35,7 @@ function [channelPower1Vpol,channelPower1Hpol, channelPower2Vpol, channelPower2H
     d1 = fpga(lru);
     
     hsize = size(d1.headers); % hsize(1) should be 114 (number of bytes in an LFAA header, hsize(2) is the number of headers.
-    if (maxPackets > hsize(1))
+    if (maxPackets > hsize(2))
         error('requested processing more packets than there are in the data file')
     end
     
@@ -164,5 +172,5 @@ function [channelPower1Vpol,channelPower1Hpol, channelPower2Vpol, channelPower2H
     legend('Vpol real','Vpol Imag','Hpol real','Hpol imag');
     title(['Histogram of raw samples, virtual channel = ' num2str(histogramVirtualChannel)])
     
-    keyboard
-    
+    %keyboard
+

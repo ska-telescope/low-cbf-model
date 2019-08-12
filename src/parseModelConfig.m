@@ -7,11 +7,15 @@ function [modelConfig] = parseModelConfig(rundir)
 %
 
 %% Load Model setup
-fid = fopen([rundir '/modelConfig.txt']);
-model_json = fread(fid,inf);
-fclose(fid);
-model_json = char(model_json');
-modelConfig = jsondecode(model_json);
+if exist("OCTAVE_VERSION", "builtin") > 0
+    modelConfig = loadjson([rundir '/modelConfig.txt'])
+else
+    fid = fopen([rundir '/modelConfig.txt']);
+    model_json = fread(fid,inf);
+    fclose(fid);
+    model_json = char(model_json');
+    modelConfig = jsondecode(model_json);
+end
 
 %% Check compulsory fields
 if ~isfield(modelConfig,'SNR')

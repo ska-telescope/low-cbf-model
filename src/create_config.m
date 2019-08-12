@@ -98,11 +98,21 @@ function create_config(rundir)
 %   JSON format file with any configuration that doesn't fit in any other category.
 
 %% Load sky definition
-fid = fopen([rundir '/sky.txt']);
-sky_json = fread(fid,inf);
-fclose(fid);
-sky_json = char(sky_json');
-sky1 = jsondecode(sky_json);
+if exist("OCTAVE_VERSION", "builtin") > 0
+    sky_octave = loadjson([rundir '/sky.txt']);
+    %change octave loadjson output to match format of matlab jsondecode()
+    for ii = 1:length(sky_octave.sky)
+      sky1.sky(ii) = sky_octave.sky{ii}{1};
+    end
+
+else
+    fid = fopen([rundir '/sky.txt']);
+    sky_json = fread(fid,inf);
+    fclose(fid);
+    sky_json = char(sky_json');
+    sky1 = jsondecode(sky_json);
+end
+
 % expandSky adds the field "subIndex", and expands entries in sky that contain an image into a set of objects at each non-zero pixel in the image.
 sky = expandSky(sky1.sky,rundir);
 
@@ -113,12 +123,12 @@ modelConfig = parseModelConfig(rundir);
 
 %% Check if lmcConfig.txt is out of date, if so then generate it and save it.
 lmcOutOfDate = 0;
-if exist(fullfile(cd,rundir,'lmcConfig.txt'),'file')
-    d0 = dir(fullfile(cd,rundir,'lmcConfig.txt'));
-    d1 = dir(fullfile(cd,rundir,'modelConfig.txt'));
-    d2 = dir(fullfile(cd,rundir,'arrayConfig.txt'));
-    d3 = dir(fullfile(cd,rundir,'sky.txt'));
-    d4 = dir(fullfile(cd,rundir,'stations.txt'));
+if exist(fullfile(pwd,rundir,'lmcConfig.txt'),'file')
+    d0 = dir(fullfile(pwd,rundir,'lmcConfig.txt'));
+    d1 = dir(fullfile(pwd,rundir,'modelConfig.txt'));
+    d2 = dir(fullfile(pwd,rundir,'arrayConfig.txt'));
+    d3 = dir(fullfile(pwd,rundir,'sky.txt'));
+    d4 = dir(fullfile(pwd,rundir,'stations.txt'));
     if (d0.datenum < max([d1.datenum, d2.datenum, d3.datenum, d4.datenum]))
         lmcOutOfDate = 1;
     end
@@ -128,12 +138,12 @@ end
 
 %% Check is LFAA.mat is out of date.
 skyOutOfDate = 0;
-if exist(fullfile(cd,rundir,'LFAA.mat'),'file')
-    d0 = dir(fullfile(cd,rundir,'LFAA.mat'));
-    d1 = dir(fullfile(cd,rundir,'modelConfig.txt'));
-    d2 = dir(fullfile(cd,rundir,'arrayConfig.txt'));
-    d3 = dir(fullfile(cd,rundir,'sky.txt'));
-    d4 = dir(fullfile(cd,rundir,'stations.txt'));
+if exist(fullfile(pwd,rundir,'LFAA.mat'),'file')
+    d0 = dir(fullfile(pwd,rundir,'LFAA.mat'));
+    d1 = dir(fullfile(pwd,rundir,'modelConfig.txt'));
+    d2 = dir(fullfile(pwd,rundir,'arrayConfig.txt'));
+    d3 = dir(fullfile(pwd,rundir,'sky.txt'));
+    d4 = dir(fullfile(pwd,rundir,'stations.txt'));
     if (d0.datenum < max([d1.datenum, d2.datenum, d3.datenum, d4.datenum]))
         skyOutOfDate = 1;
     end
@@ -143,12 +153,12 @@ end
 
 %% Check if the register settings are out of date.
 regOutOfDate = 0;
-if exist(fullfile(cd,rundir,'registerSettings.txt'),'file')
-    d0 = dir(fullfile(cd,rundir,'registerSettings.txt'));
-    d1 = dir(fullfile(cd,rundir,'modelConfig.txt'));
-    d2 = dir(fullfile(cd,rundir,'arrayConfig.txt'));
-    d3 = dir(fullfile(cd,rundir,'sky.txt'));
-    d4 = dir(fullfile(cd,rundir,'stations.txt'));
+if exist(fullfile(pwd,rundir,'registerSettings.txt'),'file')
+    d0 = dir(fullfile(pwd,rundir,'registerSettings.txt'));
+    d1 = dir(fullfile(pwd,rundir,'modelConfig.txt'));
+    d2 = dir(fullfile(pwd,rundir,'arrayConfig.txt'));
+    d3 = dir(fullfile(pwd,rundir,'sky.txt'));
+    d4 = dir(fullfile(pwd,rundir,'stations.txt'));
     if (d0.datenum < max([d1.datenum, d2.datenum, d3.datenum, d4.datenum]))
         regOutOfDate = 1;
     end
@@ -163,18 +173,26 @@ if (lmcOutOfDate)
     arrayConfigFull = parseArrayConfig(rundir,sky,modelConfig);
     %% -----------------------------------------------------------------------
     % Save lmcConfig as a json file in the run directory
-    lmcdata = jsonencode(arrayConfigFull);
-    fid = fopen([rundir '/lmcConfig.txt'],'w');
-    fprintf(fid,lmcdata);
-    fclose(fid);
+    if exist("OCTAVE_VERSION", "builtin") > 0
+        savejson('', reg, [rundir '/lmcConfig.txt']);
+    else
+        lmcdata = jsonencode(arrayConfigFull);
+        fid = fopen([rundir '/lmcConfig.txt'],'w');
+        fprintf(fid,lmcdata);
+        fclose(fid);
+    end
 else
     % lmcConfig was up to date, load from file.
     disp('LMC data is up to date, loading from lmcConfig.txt');
+    if exist("OCTAVE_VERSION", "builtin") > 0
+    arrayConfigFull = loadjson([rundir '/lmcConfig.txt']);
+    else
     fid = fopen([rundir '/lmcConfig.txt']);
     lmcjson = fread(fid,inf);
     fclose(fid);
     lmcjson = char(lmcjson');
     arrayConfigFull = jsondecode(lmcjson);
+    end
 end
 
 %% -----------------------------------------------------------------------
@@ -536,7 +554,11 @@ if (skyOutOfDate)
                             % hdr(67:74) = SPEAD sync_time (ID = 0x1027)
                             hdr(67) = 144;  % msb = 1, indicates sync_time is immediate, 0x80 + 0x10 = 0x90 = 144
                             hdr(68) = 39;   % 39 = 0x27
-                            unixTime = posixtime(datetime(clock));  % Note this doesn't do timezones correctly.
+                            if exist("OCTAVE_VERSION", "builtin") > 0
+                              unixTime = time();
+                            else
+                              unixTime = posixtime(datetime(clock));  % Note this doesn't do timezones correctly.
+                            end
                             hdr(69) = floor(unixTime/2^40);
                             hdr(70) = mod(floor(unixTime/2^32),256);
                             hdr(71) = mod(floor(unixTime/2^24),256);
@@ -777,8 +799,8 @@ if (skyOutOfDate)
         %keyboard
     end
     %keyboard
-    savename = [rundir '/LFAA'];
-    save(savename,'fpga');
+    savename = [rundir '/LFAA.mat'];
+    save('-V7', savename,'fpga');
 else
     disp('LFAA data is already up to date in LFAA.mat');
 end
@@ -794,10 +816,14 @@ if (regOutOfDate)
     [LRUreg, globalreg] = getRegisterSettings(arrayConfigFull,modelConfig);
     reg.LRU = LRUreg;
     reg.global = globalreg;
-    regdata = jsonencode(reg);
-    fid = fopen([rundir '/registerSettings.txt'],'w');
-    fprintf(fid,regdata);
-    fclose(fid);
+    if exist("OCTAVE_VERSION", "builtin") > 0
+        savejson('', reg, [rundir '/registerSettings.txt']);
+    else
+        regdata = jsonencode(reg);
+        fid = fopen([rundir '/registerSettings.txt'],'w');
+        fprintf(fid,regdata);
+        fclose(fid);
+    end
 else
     disp('Register settings in registerSettings.txt are already up to date.');
 end
