@@ -13,3 +13,10 @@ There is a related tool (lfaa-sim) that is able to take packet output from this 
 
 ## Documentation
 Documentation of the model, and a 'howto' describing its use can be found here: https://confluence.skatelescope.org/display/SE/Packetised+Model+Overview
+
+## Dependencies
+This model is known to run using either
+* Matlab R2018
+* Octave 4.0.0
+When using Octave, the jsonlab package from Github is an additional dependency, as specified in the Documentation. Version Jsonlab 1.9 has been used successfully. Later versions of these tools are also likely to work.
+
