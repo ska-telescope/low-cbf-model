@@ -83,8 +83,8 @@ function run_model(rundir)
     % Stage1 Processing - LFAA ingest and Local Doppler
 
     % Load the data file
-    fname = [rundir '/LFAA'];
-    if exist(fullfile(pwd,rundir,'LFAA'),'file')
+    fname = [rundir '/LFAA.mat'];
+    if exist(fullfile(pwd,rundir,'LFAA.mat'),'file')
         load(fname);  % Should load a variable "fpga"
     else
         error(['Cannot find ' fname '. Run create_config.m to generate it']);
